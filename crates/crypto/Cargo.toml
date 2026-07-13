@@ -1,0 +1,21 @@
+[package]
+name = "crypto"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+common.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+argon2.workspace = true
+chacha20poly1305.workspace = true
+hpke.workspace = true
+rand.workspace = true
+subtle = "2.6.1"
+sha2.workspace = true
+hmac.workspace = true
+ed25519-dalek.workspace = true
+
+[dev-dependencies]
+hex.workspace = true

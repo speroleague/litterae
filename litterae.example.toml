@@ -1,0 +1,61 @@
+# Copy to litterae.toml (or point LITTERAE_CONFIG at a path) and edit.
+
+[server]
+domain = "example.com"
+
+[storage]
+blob_dir = "./data/blobs"
+sqlite_path = "./data/litterae.sqlite3"
+
+[argon2]
+# Floor per spec §3.5: m = 64 MiB, t = 3, p = 4. Tune upward toward
+# ~0.5-1.0s wall clock for unlock on the target host.
+m_cost_kib = 65536
+t_cost = 3
+p_cost = 4
+
+[smtp]
+# Port 25 needs CAP_NET_BIND_SERVICE or root; use a high port for local dev.
+listen_addr = "0.0.0.0:25"
+max_message_size = 26214400
+# Both required to advertise STARTTLS; omit to run plaintext-only (opportunistic
+# TLS is still never required inbound -- spec §0 guardrails).
+# tls_cert_path = "./certs/fullchain.pem"
+# tls_key_path = "./certs/privkey.pem"
+
+[jmap]
+listen_addr = "127.0.0.1:8620"
+
+[submission]
+listen_addr_starttls = "0.0.0.0:587"
+listen_addr_implicit = "0.0.0.0:465"
+max_message_size = 26214400
+# Required for submission to run at all -- TLS is mandatory here.
+# tls_cert_path = "./certs/fullchain.pem"
+# tls_key_path = "./certs/privkey.pem"
+
+[admin]
+# username/password applied once on first startup if no admin exists yet;
+# log in and change the password, then feel free to remove those two lines.
+username = "admin"
+password = "change-me-please"
+# Localhost-only by default -- the admin API can create/delete mailboxes
+# and domains, so exposing it wider is an explicit choice.
+listen_addr = "127.0.0.1:8621"
+
+[antispam]
+# Optional: score inbound mail via a locally-running rspamd. Omit this
+# section (or leave endpoint unset) to skip spam scoring entirely -- zero
+# network calls, same off-unless-configured behavior as TLS.
+# Unix socket: "/var/run/rspamd/rspamd.sock"
+# TCP: "127.0.0.1:11333" (rspamd's normal worker -- not the controller port)
+# In Docker Compose, this is the rspamd service name: "rspamd:11333"
+# endpoint = "127.0.0.1:11333"
+
+[antivirus]
+# Optional: scan inbound mail via a locally-running clamd (ClamAV). Omit
+# this section to skip malware scanning entirely -- zero network calls.
+# Unix socket: "/var/run/clamav/clamd.ctl"
+# TCP: "127.0.0.1:3310"
+# In Docker Compose, this is the clamav service name: "clamav:3310"
+# endpoint = "127.0.0.1:3310"

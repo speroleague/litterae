@@ -1,0 +1,55 @@
+# One origin per app, both hostnames read from the root .env (Caddy
+# substitutes {$VAR} from its own process environment, which
+# docker-compose.yml populates via env_file: .env).
+#
+# mail.* serves the frontend (built into this image, see web/Dockerfile)
+# and reverse-proxies its API calls to litterae -- same origin, so the
+# frontend needs no cross-origin JMAP URL configured at all.
+#
+# admin.* serves the SAME frontend build (its /console/* routes) plus
+# reverse-proxies the backend's /admin/* API. The frontend build is
+# identical on both hostnames -- only Caddy's routing differs -- so each
+# origin blocks/redirects the other app's routes rather than silently
+# serving them: mail.* 404s /console/*, admin.* 404s /mail/* and sends
+# bare "/" to /console (otherwise admin.* would fall through to the SPA's
+# root route, which is the mail login page).
+#
+# rspamd's own controller UI is deliberately NOT proxied here: it has no
+# password by default and Caddy's basicauth needs a pre-hashed credential
+# it can't derive from a plaintext .env value, so exposing it would be an
+# unauthenticated door onto the admin origin. Reach it via
+# `docker compose exec rspamd rspamc` or a direct port-forward instead.
+
+{$MAIL_HOSTNAME} {
+	handle /auth/* {
+		reverse_proxy litterae:8620
+	}
+	handle /jmap/* {
+		reverse_proxy litterae:8620
+	}
+	handle /console/* {
+		respond 404
+	}
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+{$ADMIN_HOSTNAME} {
+	handle /admin/* {
+		reverse_proxy litterae:8621
+	}
+	handle /mail/* {
+		respond 404
+	}
+	handle / {
+		redir * /console 302
+	}
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -1,0 +1,9 @@
+/target
+/data
+/dev-data
+litterae.toml
+/.env
+/web/.env
+/web/node_modules
+/web/.svelte-kit
+/web/build

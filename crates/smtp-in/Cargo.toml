@@ -1,0 +1,26 @@
+[package]
+name = "smtp-in"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+common.workspace = true
+crypto.workspace = true
+auth.workspace = true
+admin.workspace = true
+audit.workspace = true
+scan.workspace = true
+delivery.workspace = true
+store.workspace = true
+mail-auth.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+
+[dev-dependencies]
+rcgen = "0.14.8"
+tempfile = "3.27.0"
+mail-builder.workspace = true
+mail-send.workspace = true

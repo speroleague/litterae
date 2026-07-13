@@ -1,0 +1,22 @@
+[package]
+name = "submission"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+common.workspace = true
+crypto.workspace = true
+audit.workspace = true
+auth.workspace = true
+queue.workspace = true
+store.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+rcgen = "0.14.8"
+tempfile = "3.27.0"

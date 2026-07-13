@@ -1,0 +1,47 @@
+# Rendered by docker/entrypoint.sh from environment variables at container
+# start (only if no config was already bind-mounted over
+# $LITTERAE_CONFIG -- see the entrypoint script for that escape hatch).
+# Not meant to be hand-edited; edit the root .env instead.
+
+[server]
+domain = "${LITTERAE_DOMAIN}"
+
+[storage]
+blob_dir = "/data/blobs"
+sqlite_path = "/data/litterae.sqlite3"
+
+[argon2]
+m_cost_kib = 65536
+t_cost = 3
+p_cost = 4
+
+[smtp]
+listen_addr = "0.0.0.0:25"
+max_message_size = 26214400
+
+[jmap]
+# 0.0.0.0, not 127.0.0.1: Caddy reaches this over the compose network as
+# `litterae:8620`, a different network namespace than litterae's own
+# loopback.
+listen_addr = "0.0.0.0:8620"
+
+[submission]
+listen_addr_starttls = "0.0.0.0:587"
+listen_addr_implicit = "0.0.0.0:465"
+max_message_size = 26214400
+# No TLS cert wired up in the default compose deployment -- submission
+# stays disabled (main.rs logs a warning and leaves the listener pending;
+# SMTP/JMAP/admin all still work). Bind-mount a full custom config over
+# this file if you need submission working.
+
+[admin]
+username = "${LITTERAE_ADMIN_USERNAME}"
+password = "${LITTERAE_ADMIN_PASSWORD}"
+# Same 0.0.0.0 reasoning as [jmap] above.
+listen_addr = "0.0.0.0:8621"
+
+[antispam]
+endpoint = "rspamd:11333"
+
+[antivirus]
+endpoint = "clamav:3310"

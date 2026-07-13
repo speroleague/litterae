@@ -1,0 +1,11 @@
+[package]
+name = "auth"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+common.workspace = true
+crypto.workspace = true
+rusqlite.workspace = true
+zeroize.workspace = true

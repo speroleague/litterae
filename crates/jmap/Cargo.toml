@@ -1,0 +1,31 @@
+[package]
+name = "jmap"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+common.workspace = true
+crypto.workspace = true
+audit.workspace = true
+store.workspace = true
+auth.workspace = true
+delivery.workspace = true
+queue.workspace = true
+mail-parser.workspace = true
+sha2.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+hex.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
+tempfile = "3.27.0"

@@ -1,0 +1,30 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "litterae"
+path = "src/main.rs"
+
+[dependencies]
+common.workspace = true
+store.workspace = true
+auth.workspace = true
+smtp-in.workspace = true
+jmap.workspace = true
+dns.workspace = true
+queue.workspace = true
+submission.workspace = true
+admin.workspace = true
+audit.workspace = true
+scan.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+hyper-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rcgen = "0.14.8"

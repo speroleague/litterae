@@ -1,0 +1,91 @@
+# Bundles litterae with the frontend, plus the optional services it can
+# talk to: rspamd (spam scoring), ClamAV (malware scanning), Caddy
+# (serves the frontend + terminates HTTPS in front of JMAP/admin -- no
+# separate web server needed for the static frontend), and the CrowdSec
+# engine (network-level ban decisions -- see crowdsec/README.md for why
+# the firewall bouncer that *enforces* those decisions is a host install,
+# not a container here).
+#
+# Before running: copy .env.example to .env and edit it -- that's the one
+# file this whole stack reads its configuration from.
+
+services:
+  litterae:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # SMTP/submission are raw TCP (STARTTLS/implicit TLS handled by
+      # litterae itself), so they're published directly -- Caddy is an
+      # HTTP reverse proxy and can't front these.
+      - "25:25"
+      - "587:587"
+      - "465:465"
+      # JMAP/admin are intentionally NOT published here -- only reachable
+      # through Caddy below, which terminates TLS for them.
+    volumes:
+      - litterae-data:/data
+      - litterae-logs:/var/log/litterae
+      # Escape hatch: bind-mount a hand-written config to skip the
+      # .env-driven template entirely (docker/entrypoint.sh only
+      # generates one if this path doesn't already exist).
+      # - ./litterae.toml:/etc/litterae/litterae.toml:ro
+    depends_on:
+      - rspamd
+      - clamav
+
+  rspamd:
+    image: rspamd/rspamd:4.1.1
+    restart: unless-stopped
+    volumes:
+      - rspamd-data:/var/lib/rspamd
+
+  clamav:
+    image: clamav/clamav:1.5.3-debian
+    restart: unless-stopped
+    volumes:
+      - clamav-data:/var/lib/clamav
+
+  caddy:
+    build:
+      context: ./web
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - litterae
+
+  crowdsec:
+    image: crowdsecurity/crowdsec:v1.7.8
+    restart: unless-stopped
+    environment:
+      COLLECTIONS: ""
+    ports:
+      # CrowdSec's local API, for a firewall bouncer installed on the
+      # Docker host to reach (see crowdsec/README.md).
+      - "8080:8080"
+    volumes:
+      - litterae-logs:/var/log/litterae:ro
+      - ./crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+      - ./crowdsec/parsers/s01-parse/litterae.yaml:/etc/crowdsec/parsers/s01-parse/litterae.yaml:ro
+      - ./crowdsec/scenarios/litterae-bruteforce.yaml:/etc/crowdsec/scenarios/litterae-bruteforce.yaml:ro
+      - crowdsec-data:/var/lib/crowdsec/data
+    depends_on:
+      - litterae
+
+volumes:
+  litterae-data:
+  litterae-logs:
+  rspamd-data:
+  clamav-data:
+  caddy-data:
+  caddy-config:
+  crowdsec-data:

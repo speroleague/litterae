@@ -1,0 +1,29 @@
+# Parses litterae's JSON-structured log lines (tracing-subscriber's `.json()`
+# formatter) into CrowdSec event fields. A real line looks like:
+#
+#   {"timestamp":"2026-07-12T21:37:37.772700Z","level":"WARN",
+#    "fields":{"message":"jmap unlock failed: no such account",
+#    "event":"auth_failure","remote_ip":"203.0.113.5",
+#    "identity":"alice@example.com"},"target":"jmap::handlers"}
+#
+# No grok pattern is used -- the lines are already structured JSON, so
+# `JsonExtract` pulls fields directly rather than re-parsing text.
+name: litterae/logs
+description: "Parses litterae's JSON structured logs"
+filter: "evt.Line.Labels.type == 'litterae'"
+onsuccess: next_stage
+statics:
+  - meta: log_level
+    expression: JsonExtract(evt.Line.Raw, "level")
+  - meta: message
+    expression: JsonExtract(evt.Line.Raw, "fields.message")
+  # A stable discriminator set explicitly by the handlers that log auth
+  # failures (jmap unlock, admin login, submission AUTH) -- deliberately
+  # not matched by parsing the human-readable message text, which can
+  # change wording without this parser being updated in lockstep.
+  - meta: litterae_event
+    expression: JsonExtract(evt.Line.Raw, "fields.event")
+  - meta: source_ip
+    expression: JsonExtract(evt.Line.Raw, "fields.remote_ip")
+  - meta: service
+    value: litterae

@@ -1,0 +1,39 @@
+# Local-testing variant of Caddyfile: identical routing, self-signed
+# certs via Caddy's internal CA instead of Let's Encrypt (no real DNS
+# needed -- docker-compose.override.yml swaps this in by default).
+
+{$MAIL_HOSTNAME} {
+	tls internal
+	handle /auth/* {
+		reverse_proxy litterae:8620
+	}
+	handle /jmap/* {
+		reverse_proxy litterae:8620
+	}
+	handle /console/* {
+		respond 404
+	}
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+{$ADMIN_HOSTNAME} {
+	tls internal
+	handle /admin/* {
+		reverse_proxy litterae:8621
+	}
+	handle /mail/* {
+		respond 404
+	}
+	handle / {
+		redir * /console 302
+	}
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

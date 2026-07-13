@@ -1,0 +1,27 @@
+[package]
+name = "queue"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+common.workspace = true
+audit.workspace = true
+store.workspace = true
+auth.workspace = true
+delivery.workspace = true
+dns.workspace = true
+mail-auth.workspace = true
+mail-builder.workspace = true
+mail-send.workspace = true
+tokio-rustls.workspace = true
+rustls-pki-types.workspace = true
+rusqlite.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rand.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

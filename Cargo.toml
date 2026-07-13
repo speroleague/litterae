@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common",
+    "crates/crypto",
+    "crates/store",
+    "crates/dns",
+    "crates/auth",
+    "crates/smtp-in",
+    "crates/submission",
+    "crates/queue",
+    "crates/delivery",
+    "crates/jmap",
+    "crates/audit",
+    "crates/admin",
+    "crates/scan",
+    "crates/server",
+]
+
+[workspace.package]
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+tokio = { version = "1.52.3", features = ["full"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tracing-appender = "0.2.5"
+time = { version = "0.3.53", features = ["parsing", "formatting"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
+argon2 = "0.5.3"
+chacha20poly1305 = "0.11.0"
+hpke = { version = "0.14.0", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha"] }
+rand = "0.10.2"
+hex = "0.4.3"
+sha2 = "0.11.0"
+hmac = "0.13.0"
+ed25519-dalek = "3.0.0"
+toml = "1.1.2"
+mail-parser = "0.11.5"
+mail-auth = { version = "0.11.1", features = ["generate"] }
+mail-builder = "0.4.4"
+mail-send = "0.6.1"
+rustls = { version = "0.23.41", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "tls12"] }
+rustls-pki-types = "1.15.0"
+axum = "0.8.9"
+hyper = "1.10.1"
+hyper-util = { version = "0.1.20", features = ["server-auto", "service", "tokio"] }
+futures-util = "0.3.32"
+tower = "0.5.3"
+tower-http = { version = "0.7.0", features = ["cors", "limit"] }
+hickory-resolver = "0.26.1"
+base64 = "0.22.1"
+
+common = { path = "crates/common" }
+crypto = { path = "crates/crypto" }
+store = { path = "crates/store" }
+auth = { path = "crates/auth" }
+delivery = { path = "crates/delivery" }
+smtp-in = { path = "crates/smtp-in" }
+jmap = { path = "crates/jmap" }
+dns = { path = "crates/dns" }
+queue = { path = "crates/queue" }
+submission = { path = "crates/submission" }
+admin = { path = "crates/admin" }
+audit = { path = "crates/audit" }
+scan = { path = "crates/scan" }

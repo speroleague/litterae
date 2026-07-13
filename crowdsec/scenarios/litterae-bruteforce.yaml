@@ -1,0 +1,22 @@
+# Leaky-bucket bruteforce detection over litterae's auth-failure events
+# (JMAP unlock, admin login, submission AUTH PLAIN -- every password
+# verification entry point tags its failures with fields.event =
+# "auth_failure", per crowdsec/parsers/s01-parse/litterae.yaml).
+#
+# litterae's own in-process LoginThrottle (common::throttle::LoginThrottle)
+# already rate-limits repeated attempts per identity; this scenario is the
+# network-level layer on top of it -- once one source IP racks up enough
+# failures, the firewall bouncer drops its packets outright rather than
+# leaving it to keep knocking.
+type: leaky
+name: litterae/bruteforce
+description: "Repeated authentication failures against litterae from a single source IP"
+filter: "evt.Meta.log_level == 'WARN' && evt.Meta.litterae_event == 'auth_failure'"
+groupby: "evt.Meta.source_ip"
+capacity: 5
+leakspeed: "10s"
+blackhole: 5m
+labels:
+  service: litterae
+  type: bruteforce
+  remediation: true

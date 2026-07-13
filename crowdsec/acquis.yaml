@@ -1,0 +1,9 @@
+# Tells the CrowdSec agent which log files to tail and how to label them
+# for the parser below. Matches the daily-rotating file tracing-appender
+# writes when litterae is started with LITTERAE_LOG_DIR set (see
+# crates/common/src/tracing_init.rs) -- in the Docker Compose stack this is
+# a volume shared read-only into the crowdsec container.
+filenames:
+  - /var/log/litterae/litterae.log*
+labels:
+  type: litterae

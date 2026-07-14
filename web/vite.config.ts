@@ -35,7 +35,8 @@ export default defineConfig({
 				directives: {
 					'default-src': ['self'],
 					'connect-src': ['self'],
-					'img-src': ['self', 'data:'],
+					// http:/https: needed for the message iframe's image reveal.
+					'img-src': ['self', 'data:', 'http:', 'https:'],
 					'style-src': ['self', 'unsafe-inline'],
 					'script-src': ['self', trustedScriptHash],
 					'base-uri': ['none'],

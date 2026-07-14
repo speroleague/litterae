@@ -54,7 +54,8 @@
 	title="Message content"
 	sandbox="allow-scripts"
 	{srcdoc}
-	style="width: 100%; height: {height}px; border: none; display: block; max-width: 66ch;"
+	class="rounded-[var(--radius)]"
+	style="width: 100%; height: {height}px; display: block; max-width: 66ch; border: 1px solid var(--border); background: var(--surface);"
 ></iframe>
 
 <LinkConfirmDialog bind:open={linkDialogOpen} href={pendingHref} />

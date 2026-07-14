@@ -159,7 +159,7 @@
 				<textarea
 					placeholder="Write your message…"
 					bind:value={composeState.bodyText}
-					class="min-h-[180px] flex-1 resize-none bg-transparent px-4 py-3 text-[15px] leading-relaxed outline-none"
+					class="min-h-[320px] flex-1 resize-none bg-transparent px-4 py-3 text-[15px] leading-relaxed outline-none"
 					style="color: var(--text);"
 				></textarea>
 			</div>

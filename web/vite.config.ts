@@ -17,7 +17,23 @@ export default defineConfig({
 			// serves the built files directly, no Node runtime needed.
 			// `fallback` lets client-side routing handle /mail/[id] (message
 			// IDs aren't known at build time, so they can't be prerendered).
-			adapter: adapter({ fallback: 'index.html' })
+			adapter: adapter({ fallback: 'index.html' }),
+
+			// Hashes the inline hydration bootstrap script automatically
+			// (its hash changes every build). frame-ancestors/report-uri/
+			// sandbox can't go through <meta>, so those stay in Caddyfile.
+			csp: {
+				mode: 'hash',
+				directives: {
+					'default-src': ['self'],
+					'connect-src': ['self'],
+					'img-src': ['self', 'data:'],
+					'style-src': ['self', 'unsafe-inline'],
+					'script-src': ['self'],
+					'base-uri': ['none'],
+					'form-action': ['self']
+				}
+			}
 		})
 	]
 });

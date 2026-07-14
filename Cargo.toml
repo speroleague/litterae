@@ -58,6 +58,9 @@ tower-http = { version = "0.7.0", features = ["cors", "limit"] }
 hickory-resolver = "0.26.1"
 base64 = "0.22.1"
 ammonia = ">=4.1.3"
+html5ever = "0.39.0"
+markup5ever_rcdom = "0.39.0"
+url = "2.5.8"
 
 common = { path = "crates/common" }
 crypto = { path = "crates/crypto" }

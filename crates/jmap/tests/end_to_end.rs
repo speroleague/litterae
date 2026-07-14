@@ -268,3 +268,111 @@ async fn jmap_api_without_token_is_rejected() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn html_email_is_sanitized_and_images_blocked_over_jmap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::open(tmp.path()).unwrap());
+    let metadata = Arc::new(MetadataStore::open_in_memory().unwrap());
+    let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
+    let cfg = fast_argon2();
+
+    let account = auth_store
+        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .unwrap();
+
+    let raw = b"From: sender@example.net\r\nTo: alice@example.com\r\nSubject: HTML\r\n\
+        Content-Type: text/html\r\n\r\n\
+        <p>hi</p><script>alert(1)</script><img src=\"https://evil.example/pixel.gif\">\
+        <a href=\"https://example.com\" onclick=\"steal()\">link</a>\r\n";
+    delivery::deliver(
+        &blobs,
+        &metadata,
+        &RecipientAccount {
+            id: account.id,
+            account_pub: account.account_pub,
+            key_id: account.key_id,
+        },
+        &InboundEnvelope {
+            mail_from: "sender@example.net".into(),
+            rcpt_to: "alice@example.com".into(),
+            remote_ip: "203.0.113.5".parse().unwrap(),
+        },
+        &AuthResults { spf: "pass".into(), dkim: "pass".into(), dmarc: "pass".into() },
+        raw,
+        1_700_000_000,
+        None,
+        delivery::ScanMetadata::default(),
+    )
+    .unwrap();
+
+    let state = AppState::new(
+        auth_store,
+        blobs,
+        metadata,
+        Arc::new(audit::AuditStore::open_in_memory().unwrap()),
+        Arc::new(cfg),
+        Arc::new(queue::QueueStore::open_in_memory().unwrap()),
+        Arc::new(common::changes::ChangeNotifier::new()),
+    );
+    let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+    ));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/unlock")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "local_part": "alice",
+                "domain": "example.com",
+                "password": "correct horse battery staple",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    let token = body["token"].as_str().unwrap().to_string();
+    let account_id = body["accountId"].as_str().unwrap().to_string();
+
+    let method_calls = serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [["Email/query", { "accountId": account_id }, "c1"]]
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/jmap/api")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(method_calls.to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    let email_id = body["methodResponses"][0][1]["ids"][0].as_str().unwrap().to_string();
+
+    let method_calls = serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [["Email/get", { "accountId": account_id, "ids": [email_id] }, "c2"]]
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/jmap/api")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(method_calls.to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    let email = &body["methodResponses"][0][1]["list"][0];
+
+    let html = email["bodyHtml"].as_str().unwrap();
+    assert!(!html.contains("script"));
+    assert!(!html.contains("alert"));
+    assert!(!html.contains("onclick"));
+    assert!(!html.contains("steal"));
+    assert!(html.contains("data-blocked-src=\"https://evil.example/pixel.gif\""));
+    assert!(html.contains("data-real-href=\"https://example.com\""));
+    assert_eq!(email["blockedImageCount"], 1);
+}

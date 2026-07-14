@@ -400,23 +400,23 @@
 								</div>
 							{/if}
 						</a>
-						<div class="flex shrink-0 items-center pr-1">
-							<div class="quick-actions flex items-center">
+						<div class="flex shrink-0 items-center pt-1 pr-1">
+							<div class="quick-actions flex items-center gap-0.5">
 								<button
 									onclick={(e) => archiveEmail(e, email)}
 									aria-label="Archive"
-									class="flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-[var(--surface-hover)]"
+									class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-[color-mix(in_oklch,var(--accent)_15%,transparent)] hover:text-[var(--accent)]"
 									style="color: var(--text-faint);"
 								>
-									<ArchiveIcon size={17} />
+									<ArchiveIcon size={16} />
 								</button>
 								<button
 									onclick={(e) => deleteEmail(e, email)}
 									aria-label="Delete"
-									class="flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] hover:text-[var(--danger)]"
+									class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] hover:text-[var(--danger)]"
 									style="color: var(--text-faint);"
 								>
-									<TrashIcon size={17} />
+									<TrashIcon size={16} />
 								</button>
 							</div>
 							<button

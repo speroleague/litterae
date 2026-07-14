@@ -16,6 +16,7 @@
 	} from '$lib/jmap';
 	import { mailNav, refreshMailboxes, bumpRefresh } from '$lib/mailNav.svelte';
 	import { openReply, openDraft } from '$lib/composeState.svelte';
+	import MailBodyFrame from '$lib/MailBodyFrame.svelte';
 
 	let email = $state<EmailObject | null>(null);
 	let threadEmails = $state<EmailObject[]>([]);
@@ -260,12 +261,16 @@
 					</span>
 				</a>
 			{/if}
-			<div
-				class="overflow-x-auto rounded-[var(--radius)] p-4 text-[16px] leading-relaxed whitespace-pre-wrap"
-				style="background: var(--surface); border: 1px solid var(--border); max-width: 66ch; color: var(--text); overflow-wrap: anywhere;"
-			>
-				{email.bodyText || '(no text body)'}
-			</div>
+			{#if email.bodyHtml}
+				<MailBodyFrame bodyHtml={email.bodyHtml} blockedImageCount={email.blockedImageCount ?? 0} />
+			{:else}
+				<div
+					class="overflow-x-auto rounded-[var(--radius)] p-4 text-[16px] leading-relaxed whitespace-pre-wrap"
+					style="background: var(--surface); border: 1px solid var(--border); max-width: 66ch; color: var(--text); overflow-wrap: anywhere;"
+				>
+					{email.bodyText || '(no text body)'}
+				</div>
+			{/if}
 
 			{#if threadEmails.length > 0}
 				<div class="mt-6" style="max-width: 66ch;">

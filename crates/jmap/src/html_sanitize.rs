@@ -75,7 +75,7 @@ fn ammonia_clean(raw_html: &str) -> String {
         .clean_content_tags(["script", "style"].into_iter().collect())
         .tag_attributes(tag_attributes)
         .generic_attributes(Default::default())
-        .url_schemes(["http", "https", "mailto"].into_iter().collect())
+        .url_schemes(["http", "https", "mailto", "data"].into_iter().collect())
         .clean(raw_html)
         .to_string()
 }
@@ -88,7 +88,8 @@ fn pass2_rewrite(clean_html: &str) -> SanitizedHtml {
     let mut blocked_image_count = 0u32;
     walk(&dom.document, &mut blocked_image_count);
 
-    let inner: SerializableHandle = first_child(&dom.document).unwrap_or(dom.document).into();
+    let inner_handle = first_child(&dom.document).unwrap_or_else(|| dom.document.clone());
+    let inner: SerializableHandle = inner_handle.into();
     let mut buf = Vec::new();
     serialize(
         &mut buf,
@@ -176,13 +177,12 @@ fn rewrite_a(attrs: &RefCell<Vec<Attribute>>) {
     };
     remove_attr(&mut attrs, "href");
 
-    if let Ok(url) = Url::parse(&href) {
-        let scheme = url.scheme();
-        if scheme == "http" || scheme == "https" || scheme == "mailto" {
-            set_attr(&mut attrs, "data-real-href", href);
-            set_attr(&mut attrs, "href", "#".to_string());
-            return;
-        }
+    let allowed_scheme = Url::parse(&href)
+        .map(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
+        .unwrap_or(false);
+    if allowed_scheme {
+        set_attr(&mut attrs, "data-real-href", href);
+        set_attr(&mut attrs, "href", "#".to_string());
     }
     // Relative, javascript:, or any other/unparseable scheme -- the link
     // stays present as text but non-navigable (no href at all).
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn blocks_remote_image_and_counts_it() {
         let result = sanitize(r#"<img src="https://evil.example/pixel.gif">"#);
-        assert!(!result.html.contains(r#"src="https://evil.example"#));
+        assert!(!result.html.contains(" src=\"https://evil.example"));
         assert!(result.html.contains(r#"data-blocked-src="https://evil.example/pixel.gif""#));
         assert_eq!(result.blocked_image_count, 1);
     }
@@ -242,7 +242,7 @@ mod tests {
         let out = sanitize(r#"<a href="https://example.com/page">click</a>"#).html;
         assert!(out.contains(r#"data-real-href="https://example.com/page""#));
         assert!(out.contains("href=\"#\""));
-        assert!(!out.contains(r#"href="https://example.com/page""#));
+        assert!(!out.contains(" href=\"https://example.com/page\""));
     }
 
     #[test]
@@ -305,46 +305,5 @@ mod tests {
         let out = sanitize("<p>Hello <b>world</b></p>").html;
         assert!(out.contains("Hello"));
         assert!(out.contains("world"));
-    }
-}
-
-#[cfg(test)]
-mod debug_tests {
-    use super::*;
-    #[test]
-    fn debug_print() {
-        let pass1 = ammonia_clean("<p>Hello <b>world</b></p>");
-        eprintln!("PASS1: {:?}", pass1);
-
-        let context = QualName::new(None, ns!(html), local_name!("div"));
-        let dom = html5ever::driver::parse_fragment(RcDom::default(), ParseOpts::default(), context, vec![], false)
-            .one(pass1.as_str());
-        eprintln!("doc children: {}", dom.document.children.borrow().len());
-        for c in dom.document.children.borrow().iter() {
-            eprintln!("  child data: {:?}", debug_name(c));
-            eprintln!("  child's children: {}", c.children.borrow().len());
-            for gc in c.children.borrow().iter() {
-                eprintln!("    grandchild: {:?}", debug_name(gc));
-            }
-        }
-    }
-
-    #[test]
-    fn debug_full_path() {
-        let pass1 = ammonia_clean("<p>Hello <b>world</b></p>");
-        eprintln!("PASS1: {:?}", pass1);
-        let result = pass2_rewrite(&pass1);
-        eprintln!("PASS2: {:?} blocked={}", result.html, result.blocked_image_count);
-    }
-
-    fn debug_name(h: &Handle) -> String {
-        match &h.data {
-            NodeData::Document => "#document".to_string(),
-            NodeData::Doctype { .. } => "#doctype".to_string(),
-            NodeData::Text { contents } => format!("#text({:?})", contents.borrow().to_string()),
-            NodeData::Comment { .. } => "#comment".to_string(),
-            NodeData::Element { name, .. } => format!("<{}>", name.local),
-            NodeData::ProcessingInstruction { .. } => "#pi".to_string(),
-        }
     }
 }

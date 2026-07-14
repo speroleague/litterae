@@ -42,6 +42,10 @@ export interface EmailObject {
 	/** true = clamd scanned and found nothing, false = clamd found
 	 * something, null = not scanned. */
 	avClean: boolean | null;
+	/** Sanitized HTML body, null if this message has no HTML part. */
+	bodyHtml: string | null;
+	/** Remote images stripped pending explicit reveal; null iff bodyHtml is null. */
+	blockedImageCount: number | null;
 }
 
 export interface MailboxObject {

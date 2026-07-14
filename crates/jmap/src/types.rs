@@ -179,6 +179,14 @@ pub struct EmailObject {
     /// something, `null` = not scanned.
     #[serde(rename = "avClean")]
     pub av_clean: Option<bool>,
+    /// Sanitized HTML body (see `html_sanitize`), `null` if this message
+    /// has no HTML part -- clients fall back to `bodyText`.
+    #[serde(rename = "bodyHtml")]
+    pub body_html: Option<String>,
+    /// Remote images stripped from `bodyHtml` pending explicit reveal,
+    /// `null` iff `bodyHtml` is `null`.
+    #[serde(rename = "blockedImageCount")]
+    pub blocked_image_count: Option<u32>,
 }
 
 #[derive(Deserialize)]

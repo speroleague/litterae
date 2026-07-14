@@ -8,6 +8,7 @@ use mail_parser::MessageParser;
 
 use store::{BlobStore, StoredMessage};
 
+use crate::html_sanitize;
 use crate::types::{EmailAddress, EmailObject};
 
 const PREVIEW_LEN: usize = 200;
@@ -20,14 +21,18 @@ pub fn open_and_parse(
     let raw = delivery::open_message(blobs, stored, account_priv)?;
     let message = MessageParser::default().parse(&raw);
 
-    let (from, to, subject, body_text) = match &message {
+    let (from, to, subject, body_text, sanitized_html) = match &message {
         Some(m) => (
             addresses(m.from()),
             addresses(m.to()),
             m.subject().map(|s| s.to_string()),
             m.body_text(0).map(|s| s.to_string()),
+            (m.html_body_count() > 0)
+                .then(|| m.body_html(0))
+                .flatten()
+                .map(|html| html_sanitize::sanitize(&html)),
         ),
-        None => (Vec::new(), Vec::new(), None, None),
+        None => (Vec::new(), Vec::new(), None, None, None),
     };
 
     let preview = body_text
@@ -60,6 +65,8 @@ pub fn open_and_parse(
         in_reply_to_message_id: stored.in_reply_to.clone(),
         spam_score: stored.spam_score,
         av_clean: stored.av_clean,
+        body_html: sanitized_html.as_ref().map(|s| s.html.clone()),
+        blocked_image_count: sanitized_html.as_ref().map(|s| s.blocked_image_count),
     })
 }
 

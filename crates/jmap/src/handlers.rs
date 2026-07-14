@@ -240,37 +240,49 @@ pub async fn sse(
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     let rx = state.notifier.subscribe();
-    let stream = stream::unfold((rx, account_id), |(mut rx, account_id)| async move {
-        loop {
-            tokio::select! {
-                changed = rx.recv() => {
-                    match changed {
-                        Ok(c) if c.account_id == account_id => {
-                            let payload = serde_json::json!({
-                                "@type": "StateChange",
-                                "changed": {
-                                    account_id.to_string(): {
-                                        "Mailbox": c.state.to_string(),
-                                        "Email": c.state.to_string(),
+    // Unlike every other authenticated endpoint (which re-validates via
+    // `with_session`/`account_id` on every call, including the idle
+    // timeout), a streaming connection has no natural "next request" to
+    // hang that check on -- so the heartbeat tick doubles as one. This
+    // means a revoked or idled-out token stops this stream within one
+    // heartbeat interval instead of staying live until the client
+    // disconnects on its own.
+    let stream = stream::unfold(
+        (rx, account_id, state.sessions.clone(), token),
+        |(mut rx, account_id, sessions, token)| async move {
+            loop {
+                tokio::select! {
+                    changed = rx.recv() => {
+                        match changed {
+                            Ok(c) if c.account_id == account_id => {
+                                let payload = serde_json::json!({
+                                    "@type": "StateChange",
+                                    "changed": {
+                                        account_id.to_string(): {
+                                            "Mailbox": c.state.to_string(),
+                                            "Email": c.state.to_string(),
+                                        }
                                     }
-                                }
-                            });
-                            let event = Event::default().event("state").data(payload.to_string());
-                            return Some((Ok(event), (rx, account_id)));
+                                });
+                                let event = Event::default().event("state").data(payload.to_string());
+                                return Some((Ok(event), (rx, account_id, sessions, token)));
+                            }
+                            // Not this connection's account -- keep waiting,
+                            // don't emit anything for it.
+                            Ok(_) => continue,
+                            // A slow consumer missed some notifications; not
+                            // fatal, just re-fetch will catch it up (same
+                            // effect as coalescing several "changed" events).
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Closed) => return None,
                         }
-                        // Not this connection's account -- keep waiting,
-                        // don't emit anything for it.
-                        Ok(_) => continue,
-                        // A slow consumer missed some notifications; not
-                        // fatal, just re-fetch will catch it up (same
-                        // effect as coalescing several "changed" events).
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => return None,
                     }
-                }
-                _ = tokio::time::sleep(Duration::from_secs(30)) => {
-                    return Some((Ok(Event::default().comment("heartbeat")), (rx, account_id)));
-                }
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                        if sessions.account_id(&token) != Some(account_id) {
+                            return None;
+                        }
+                        return Some((Ok(Event::default().comment("heartbeat")), (rx, account_id, sessions, token)));
+                    }
             }
         }
     });

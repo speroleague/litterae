@@ -13,6 +13,7 @@ auth.workspace = true
 delivery.workspace = true
 queue.workspace = true
 mail-parser.workspace = true
+ammonia.workspace = true
 sha2.workspace = true
 axum.workspace = true
 futures-util.workspace = true

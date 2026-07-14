@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use tracing_appender::rolling::{Builder as RollingBuilder, Rotation};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -20,9 +21,30 @@ pub fn init() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let stdout_layer = fmt::layer().json();
 
-    match std::env::var("LITTERAE_LOG_DIR") {
-        Ok(dir) => {
-            let appender = tracing_appender::rolling::daily(Path::new(&dir), "litterae.log");
+    // `rolling::daily` panics internally on an unwritable directory (a
+    // thin wrapper over `Builder::build().expect(...)`) -- use the
+    // fallible builder instead so a bad LITTERAE_LOG_DIR degrades to
+    // stdout-only logging rather than crashing the process.
+    let file_layer_setup = std::env::var("LITTERAE_LOG_DIR").ok().and_then(|dir| {
+        match RollingBuilder::new()
+            .rotation(Rotation::DAILY)
+            .filename_prefix("litterae")
+            .filename_suffix("log")
+            .build(Path::new(&dir))
+        {
+            Ok(appender) => Some(appender),
+            Err(e) => {
+                eprintln!(
+                    "warning: LITTERAE_LOG_DIR={dir} is set but unusable ({e}) -- \
+                     continuing with stdout-only logging"
+                );
+                None
+            }
+        }
+    });
+
+    match file_layer_setup {
+        Some(appender) => {
             let (writer, guard) = tracing_appender::non_blocking(appender);
             let file_layer = fmt::layer().json().with_writer(writer);
             tracing_subscriber::registry()
@@ -32,7 +54,7 @@ pub fn init() -> Option<tracing_appender::non_blocking::WorkerGuard> {
                 .init();
             Some(guard)
         }
-        Err(_) => {
+        None => {
             tracing_subscriber::registry()
                 .with(filter)
                 .with(stdout_layer)

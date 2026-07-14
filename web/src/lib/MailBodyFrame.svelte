@@ -55,7 +55,7 @@
 	sandbox="allow-scripts"
 	{srcdoc}
 	class="rounded-[var(--radius)]"
-	style="width: 100%; height: {height}px; display: block; max-width: 66ch; border: 1px solid var(--border); background: var(--surface);"
+	style="width: 100%; height: {height}px; display: block; max-width: 90ch; border: 1px solid var(--border); background: var(--surface);"
 ></iframe>
 
 <LinkConfirmDialog bind:open={linkDialogOpen} href={pendingHref} />

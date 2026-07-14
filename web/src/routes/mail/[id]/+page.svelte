@@ -169,7 +169,7 @@
 	}
 </script>
 
-<div class="mx-auto flex min-h-screen max-w-2xl flex-col">
+<div class="mx-auto flex min-h-screen max-w-4xl flex-col">
 	<header
 		class="flex items-center justify-between gap-2 px-2 py-3"
 		style="border-bottom: 1px solid var(--border);"
@@ -235,7 +235,7 @@
 		{:else if error}
 			<p class="text-sm" style="color: var(--danger);">{error}</p>
 		{:else if email}
-			<h1 class="mb-3 text-xl font-semibold" style="color: var(--text); max-width: 66ch;">
+			<h1 class="mb-3 text-xl font-semibold" style="color: var(--text); max-width: 90ch;">
 				{email.subject || '(no subject)'}
 			</h1>
 			<div class="mb-6 flex flex-col gap-0.5 text-sm">
@@ -252,7 +252,7 @@
 				<a
 					href={`/mail/${parentEmail.id}`}
 					class="mb-3 flex items-center gap-1.5 text-sm transition-colors hover:underline"
-					style="color: var(--text-faint); max-width: 66ch;"
+					style="color: var(--text-faint); max-width: 90ch;"
 				>
 					<ArrowElbowDownRightIcon size={14} />
 					<span class="truncate">
@@ -266,14 +266,14 @@
 			{:else}
 				<div
 					class="overflow-x-auto rounded-[var(--radius)] p-4 text-[16px] leading-relaxed whitespace-pre-wrap"
-					style="background: var(--surface); border: 1px solid var(--border); max-width: 66ch; color: var(--text); overflow-wrap: anywhere;"
+					style="background: var(--surface); border: 1px solid var(--border); max-width: 90ch; color: var(--text); overflow-wrap: anywhere;"
 				>
 					{email.bodyText || '(no text body)'}
 				</div>
 			{/if}
 
 			{#if threadEmails.length > 0}
-				<div class="mt-6" style="max-width: 66ch;">
+				<div class="mt-6" style="max-width: 90ch;">
 					<h2 class="mb-2 text-xs font-medium tracking-wide uppercase" style="color: var(--text-faint);">
 						Also in this thread
 					</h2>

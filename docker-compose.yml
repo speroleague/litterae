@@ -64,7 +64,8 @@ services:
       - litterae
 
   crowdsec:
-    image: crowdsecurity/crowdsec:v1.7.8
+    build:
+      context: ./crowdsec
     restart: unless-stopped
     environment:
       COLLECTIONS: ""
@@ -74,9 +75,6 @@ services:
       - "8080:8080"
     volumes:
       - litterae-logs:/var/log/litterae:ro
-      - ./crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
-      - ./crowdsec/parsers/s01-parse/litterae.yaml:/etc/crowdsec/parsers/s01-parse/litterae.yaml:ro
-      - ./crowdsec/scenarios/litterae-bruteforce.yaml:/etc/crowdsec/scenarios/litterae-bruteforce.yaml:ro
       - crowdsec-data:/var/lib/crowdsec/data
     depends_on:
       - litterae

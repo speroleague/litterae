@@ -10,7 +10,8 @@
 		XIcon,
 		ListIcon,
 		DotsThreeVerticalIcon,
-		NotePencilIcon
+		NotePencilIcon,
+		GearIcon
 	} from 'phosphor-svelte';
 	import { goto } from '$app/navigation';
 	import { fade } from 'svelte/transition';
@@ -217,6 +218,23 @@
 		const date = new Date(iso);
 		return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 	}
+
+	function fullDateTimeLabel(iso: string) {
+		return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+	}
+
+	function senderEmail(email: EmailObject): string {
+		return email.from[0]?.email ?? '(unknown sender)';
+	}
+
+	function spamScoreLabel(email: EmailObject): string | null {
+		return email.spamScore !== null ? `Spam score ${email.spamScore.toFixed(1)}` : null;
+	}
+
+	function avLabel(email: EmailObject): string | null {
+		if (email.avClean === null) return null;
+		return email.avClean ? 'Clean' : 'Malware detected';
+	}
 </script>
 
 <div class="flex min-h-screen flex-col">
@@ -281,6 +299,14 @@
 				>
 					<EnvelopeSimpleIcon size={20} weight={mailNav.activeViewId === UNREAD_VIEW ? 'fill' : 'regular'} />
 				</button>
+				<button
+					onclick={() => goto('/mail/settings')}
+					aria-label="Signature settings"
+					class="flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-[var(--surface-hover)]"
+					style="color: var(--text-muted);"
+				>
+					<GearIcon size={20} />
+				</button>
 				<ThemeToggle />
 				<button
 					onclick={handleLock}
@@ -318,11 +344,14 @@
 		{:else}
 			<ul>
 				{#each emails as email (email.id)}
-					<li class="relative flex items-start" style="border-bottom: 1px solid var(--border);">
+					<li
+						class="hover-row relative flex items-start transition-colors hover:bg-[var(--surface-hover)]"
+						style="border-bottom: 1px solid var(--border);"
+					>
 						<a
 							href={`/mail/${email.id}`}
 							onclick={isDraft(email) ? (e) => resumeDraft(e, email) : undefined}
-							class="block min-w-0 flex-1 py-3.5 pr-2 pl-4 transition-colors hover:bg-[var(--surface-hover)]"
+							class="block min-w-0 flex-1 py-3.5 pr-2 pl-4"
 							style="color: var(--text);"
 						>
 							<div class="mb-0.5 flex items-center gap-2">
@@ -351,8 +380,45 @@
 							<div class="truncate pl-4 text-sm" style="color: var(--text-muted);">
 								{email.preview}
 							</div>
+							{#if !isDraft(email)}
+								<div class="hover-detail pl-4 text-xs" style="color: var(--text-faint);">
+									<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pt-1.5">
+										<span>{senderEmail(email)}</span>
+										<span>·</span>
+										<span>{fullDateTimeLabel(email.receivedAt)}</span>
+										{#if spamScoreLabel(email)}
+											<span>·</span>
+											<span>{spamScoreLabel(email)}</span>
+										{/if}
+										{#if avLabel(email)}
+											<span>·</span>
+											<span style={email.avClean === false ? 'color: var(--danger);' : undefined}>
+												{avLabel(email)}
+											</span>
+										{/if}
+									</div>
+								</div>
+							{/if}
 						</a>
 						<div class="flex shrink-0 items-center pr-1">
+							<div class="quick-actions flex items-center">
+								<button
+									onclick={(e) => archiveEmail(e, email)}
+									aria-label="Archive"
+									class="flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-[var(--surface-hover)]"
+									style="color: var(--text-faint);"
+								>
+									<ArchiveIcon size={17} />
+								</button>
+								<button
+									onclick={(e) => deleteEmail(e, email)}
+									aria-label="Delete"
+									class="flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] hover:text-[var(--danger)]"
+									style="color: var(--text-faint);"
+								>
+									<TrashIcon size={17} />
+								</button>
+							</div>
 							<button
 								onclick={(e) => toggleFlag(e, email)}
 								aria-label={isFlagged(email) ? 'Unflag' : 'Flag'}
@@ -427,3 +493,37 @@
 		<NotePencilIcon size={22} weight="bold" />
 	</button>
 </div>
+
+<style>
+	/* Extra per-row detail (sender email, full date/time, scan scores) and
+	   the inline archive/delete shortcuts are desktop-hover affordances --
+	   `(hover: hover) and (pointer: fine)` excludes touchscreens, which
+	   have no hover state to reveal them with (they'd otherwise be stuck
+	   permanently visible or permanently reachable only via tap-and-hold).
+	   Mobile keeps using the always-visible star/ellipsis menu instead. */
+	.hover-detail {
+		max-height: 0;
+		opacity: 0;
+		overflow: hidden;
+		transition:
+			max-height 150ms ease,
+			opacity 150ms ease;
+	}
+	.quick-actions {
+		display: none;
+	}
+	@media (hover: hover) and (pointer: fine) {
+		:global(.hover-row):hover .hover-detail {
+			max-height: 2rem;
+			opacity: 1;
+		}
+		.quick-actions {
+			display: flex;
+			opacity: 0;
+			transition: opacity 150ms ease;
+		}
+		:global(.hover-row):hover .quick-actions {
+			opacity: 1;
+		}
+	}
+</style>

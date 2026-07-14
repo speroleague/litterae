@@ -130,6 +130,7 @@ mod tests {
             raw.as_bytes(),
             1_700_000_000,
             None,
+            delivery::ScanMetadata::default(),
         )
         .unwrap();
     }

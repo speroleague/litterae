@@ -21,6 +21,17 @@ use store::{
 /// Not secret, but must match between seal and open (spec's hpke_seal doc).
 const DEK_SEAL_INFO: &[u8] = b"litterae/message-dek/v1";
 
+/// Content-scan results to persist alongside a delivered message, kept as
+/// plain primitives (not `scan::ScanResult`) so this crate doesn't need a
+/// dependency on `scan` for two optional numbers. `Default` (both `None`)
+/// is correct for anything that was never scanned -- drafts, sent copies,
+/// locally-delivered DSNs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScanMetadata {
+    pub spam_score: Option<f64>,
+    pub av_clean: Option<bool>,
+}
+
 /// Seals `raw` under a fresh per-message DEK, writes it to blob storage, and
 /// HPKE-seals the DEK to `account_pub`. Shared by inbound delivery and
 /// JMAP-side compose (drafts/sent) -- both end up needing the same
@@ -83,6 +94,7 @@ pub fn deliver(
     raw_message: &[u8],
     received_at: i64,
     spam_reason: Option<&str>,
+    scan: ScanMetadata,
 ) -> Result<DeliveredMessage> {
     // Fail closed on unparseable input rather than storing garbage that
     // the JMAP read layer would later choke on. Threading needs the
@@ -140,6 +152,8 @@ pub fn deliver(
         in_reply_to: (!in_reply_to_header.is_empty()).then_some(in_reply_to_header.as_str()),
         references_header: (!references_header.is_empty()).then_some(references_header.as_str()),
         subject_hash: subject_hash.as_deref(),
+        spam_score: scan.spam_score,
+        av_clean: scan.av_clean,
     })?;
 
     Ok(DeliveredMessage {
@@ -221,6 +235,7 @@ mod tests {
             RAW_MESSAGE,
             1_700_000_000,
             None,
+            ScanMetadata::default(),
         )
         .unwrap();
 
@@ -256,6 +271,7 @@ mod tests {
             RAW_MESSAGE,
             1_700_000_000,
             None,
+            ScanMetadata::default(),
         )
         .unwrap();
         let stored = metadata.get_message(delivered.message_id).unwrap().unwrap();
@@ -286,6 +302,7 @@ mod tests {
             b"",
             1_700_000_000,
             None,
+            ScanMetadata::default(),
         );
         // Empty input still parses to an empty message under mail-parser's
         // lenient rules, so this asserts the classify step runs at all
@@ -317,6 +334,7 @@ mod tests {
             RAW_MESSAGE,
             1_700_000_000,
             None,
+            ScanMetadata::default(),
         )
         .unwrap();
         assert!(delivered.message_id > 0);
@@ -338,6 +356,7 @@ mod tests {
             RAW_MESSAGE,
             1_700_000_000,
             None,
+            ScanMetadata::default(),
         )
         .unwrap();
 
@@ -362,6 +381,7 @@ mod tests {
             RAW_MESSAGE,
             1_700_000_000,
             Some("rspamd add header"),
+            ScanMetadata::default(),
         )
         .unwrap();
 
@@ -388,6 +408,7 @@ mod tests {
             b"From: sender@example.net\r\nTo: alice@example.com\r\nSubject: Hello\r\nMessage-ID: <orig@example.net>\r\n\r\nbody\r\n",
             1_700_000_000,
             None,
+            ScanMetadata::default(),
         )
         .unwrap();
 
@@ -400,6 +421,7 @@ mod tests {
             b"From: sender@example.net\r\nTo: alice@example.com\r\nSubject: Re: Hello\r\nMessage-ID: <reply@example.net>\r\nIn-Reply-To: <orig@example.net>\r\n\r\nbody\r\n",
             1_700_000_100,
             None,
+            ScanMetadata::default(),
         )
         .unwrap();
 
@@ -421,12 +443,14 @@ mod tests {
             b"From: a@example.net\r\nTo: alice@example.com\r\nSubject: First topic\r\nMessage-ID: <a@example.net>\r\n\r\nbody\r\n",
             1_700_000_000,
             None,
+            ScanMetadata::default(),
         ).unwrap();
         let second = deliver(
             &blobs, &metadata, &recipient_account, &envelope(), &auth_results(),
             b"From: b@example.net\r\nTo: alice@example.com\r\nSubject: Second topic\r\nMessage-ID: <b@example.net>\r\n\r\nbody\r\n",
             1_700_000_100,
             None,
+            ScanMetadata::default(),
         ).unwrap();
 
         let first_stored = metadata.get_message(first.message_id).unwrap().unwrap();

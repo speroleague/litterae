@@ -73,6 +73,11 @@ async fn main() {
         "content scanning configured",
     );
 
+    // One process-wide instance: inbound delivery (smtp-in), local DSN
+    // delivery (the outbound worker), and JMAP's own mutations all publish
+    // to it; JMAP's `/jmap/sse` endpoint is the only subscriber.
+    let notifier = Arc::new(common::changes::ChangeNotifier::new());
+
     let smtp_result = smtp_in::run(
         &config.smtp,
         config.server.domain.clone(),
@@ -82,6 +87,7 @@ async fn main() {
         metadata.clone(),
         scanner,
         audit_store.clone(),
+        notifier.clone(),
     );
 
     let jmap_state = jmap::AppState::new(
@@ -91,6 +97,7 @@ async fn main() {
         audit_store.clone(),
         argon2_config.clone(),
         queue_store.clone(),
+        notifier.clone(),
     );
     let jmap_router = jmap::build_router(jmap_state);
     let jmap_addr = config.jmap.listen_addr.clone();
@@ -147,6 +154,7 @@ async fn main() {
         audit_store.clone(),
         resolver,
         config.server.domain.clone(),
+        notifier,
     );
     tokio::spawn(async move { worker.run().await });
 

@@ -31,6 +31,17 @@ export interface EmailObject {
 	preview: string;
 	bodyText: string | null;
 	size: number;
+	/** This message's own `Message-ID` header. */
+	messageId: string | null;
+	/** The `Message-ID` of the message this one replied to, if any --
+	 * match against a thread sibling's own `messageId` to find it. */
+	inReplyToMessageId: string | null;
+	/** rspamd's raw score, null if antispam scanning wasn't
+	 * configured/reachable for this message. */
+	spamScore: number | null;
+	/** true = clamd scanned and found nothing, false = clamd found
+	 * something, null = not scanned. */
+	avClean: boolean | null;
 }
 
 export interface MailboxObject {
@@ -289,4 +300,48 @@ export async function getThreadEmailIds(token: string, accountId: string, thread
 	const [[, result]] = await callApi(token, [['Thread/get', { accountId, ids: [threadId] }, 'c1']]);
 	const list = result.list as { id: string; emailIds: string[] }[] | undefined;
 	return list?.[0]?.emailIds ?? [];
+}
+
+export interface IdentityObject {
+	id: string;
+	name: string;
+	email: string;
+	textSignature: string;
+	mayDelete: boolean;
+}
+
+/** Litterae has exactly one identity per account (RFC 8621 §6, our own
+ * address) -- this always returns it or null if the account is somehow
+ * missing one. */
+export async function getIdentity(token: string, accountId: string): Promise<IdentityObject | null> {
+	const [[, result]] = await callApi(token, [['Identity/get', { accountId }, 'c1']]);
+	const list = result.list as IdentityObject[];
+	return list[0] ?? null;
+}
+
+export async function setIdentitySignature(
+	token: string,
+	accountId: string,
+	identityId: string,
+	textSignature: string
+): Promise<void> {
+	await callApi(token, [
+		['Identity/set', { accountId, update: { [identityId]: { textSignature } } }, 'c1']
+	]);
+}
+
+/**
+ * Opens the JMAP push stream (RFC 8620 §7.3): the server emits a `state`
+ * event any time this account's mail changes (new delivery, send,
+ * archive/delete, from any client/tab), so callers can re-fetch instead of
+ * polling. `EventSource` can't set an `Authorization` header, so the token
+ * rides along as a query param -- the server accepts that as a fallback
+ * specific to this endpoint (see `jmap::handlers::sse`). The browser
+ * reconnects automatically on drop, re-sending the same URL. Returns a
+ * cleanup function; call it on lock/unmount.
+ */
+export function subscribeToChanges(token: string, onChange: () => void): () => void {
+	const source = new EventSource(`${JMAP_URL}/jmap/sse?token=${encodeURIComponent(token)}`);
+	source.addEventListener('state', () => onChange());
+	return () => source.close();
 }

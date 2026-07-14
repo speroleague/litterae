@@ -80,6 +80,7 @@ async fn compose_save_draft_then_send_lands_in_sent_and_queue() {
         Arc::new(audit::AuditStore::open_in_memory().unwrap()),
         Arc::new(cfg),
         queue_store.clone(),
+        Arc::new(common::changes::ChangeNotifier::new()),
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
@@ -210,6 +211,7 @@ async fn a_draft_reply_joins_the_original_thread() {
         b"From: carol@example.net\r\nTo: alice@example.test\r\nSubject: Original\r\nMessage-ID: <orig@example.net>\r\n\r\nHi\r\n",
         1_700_000_000,
         None,
+        delivery::ScanMetadata::default(),
     )
     .unwrap();
 
@@ -220,6 +222,7 @@ async fn a_draft_reply_joins_the_original_thread() {
         Arc::new(audit::AuditStore::open_in_memory().unwrap()),
         Arc::new(cfg),
         queue_store,
+        Arc::new(common::changes::ChangeNotifier::new()),
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),

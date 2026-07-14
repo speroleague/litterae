@@ -62,10 +62,11 @@ async fn unlock_query_get_round_trips_decrypted_content() {
         b"From: sender@example.net\r\nTo: alice@example.com\r\nSubject: Hello JMAP\r\n\r\nBody text here.\r\n",
         1_700_000_000,
         None,
+        delivery::ScanMetadata::default(),
     )
     .unwrap();
 
-    let state = AppState::new(auth_store, blobs, metadata, Arc::new(audit::AuditStore::open_in_memory().unwrap()), Arc::new(cfg), Arc::new(queue::QueueStore::open_in_memory().unwrap()));
+    let state = AppState::new(auth_store, blobs, metadata, Arc::new(audit::AuditStore::open_in_memory().unwrap()), Arc::new(cfg), Arc::new(queue::QueueStore::open_in_memory().unwrap()), Arc::new(common::changes::ChangeNotifier::new()));
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
     ));
@@ -189,6 +190,7 @@ async fn repeated_failed_unlocks_are_throttled() {
         Arc::new(audit::AuditStore::open_in_memory().unwrap()),
         Arc::new(cfg),
         Arc::new(queue::QueueStore::open_in_memory().unwrap()),
+        Arc::new(common::changes::ChangeNotifier::new()),
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
@@ -222,7 +224,7 @@ async fn jmap_api_without_token_is_rejected() {
     let blobs = Arc::new(BlobStore::open(tmp.path()).unwrap());
     let metadata = Arc::new(MetadataStore::open_in_memory().unwrap());
     let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
-    let state = AppState::new(auth_store, blobs, metadata, Arc::new(audit::AuditStore::open_in_memory().unwrap()), Arc::new(fast_argon2()), Arc::new(queue::QueueStore::open_in_memory().unwrap()));
+    let state = AppState::new(auth_store, blobs, metadata, Arc::new(audit::AuditStore::open_in_memory().unwrap()), Arc::new(fast_argon2()), Arc::new(queue::QueueStore::open_in_memory().unwrap()), Arc::new(common::changes::ChangeNotifier::new()));
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
     ));

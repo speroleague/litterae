@@ -18,6 +18,20 @@ class ComposeState {
 
 export const composeState = new ComposeState();
 
+/** Cached from `Identity/get` after unlock (see mail/+layout.svelte) so
+ * openNewMessage/openReply can insert it synchronously -- it's plain text
+ * the user types into and can edit/remove, same as any mail client's
+ * signature, not something the server appends at send time. */
+const identityState = $state({ signature: '' });
+
+export function setSignature(text: string) {
+	identityState.signature = text;
+}
+
+function signatureBlock(): string {
+	return identityState.signature.trim() ? `\n\n-- \n${identityState.signature}` : '';
+}
+
 function reset() {
 	composeState.draftId = null;
 	composeState.inReplyTo = null;
@@ -29,6 +43,7 @@ function reset() {
 
 export function openNewMessage() {
 	reset();
+	composeState.bodyText = signatureBlock();
 	composeState.open = true;
 }
 
@@ -37,6 +52,7 @@ export function openReply(opts: { to: string; subject: string; inReplyTo: string
 	composeState.to = opts.to;
 	composeState.subject = opts.subject.toLowerCase().startsWith('re:') ? opts.subject : `Re: ${opts.subject}`;
 	composeState.inReplyTo = opts.inReplyTo;
+	composeState.bodyText = signatureBlock();
 	composeState.open = true;
 }
 

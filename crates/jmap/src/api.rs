@@ -16,8 +16,9 @@ use crate::email;
 use crate::types::{
     error_response, EmailCreateRequest, EmailGetArgs, EmailGetResult, EmailObject, EmailQueryArgs,
     EmailQueryResult, EmailSetArgs, EmailSetResult, EmailSubmissionSetArgs,
-    EmailSubmissionSetResult, MailboxGetArgs, MailboxGetResult, MailboxObject, MethodCall,
-    MethodResponse, ThreadGetArgs, ThreadGetResult, ThreadObject,
+    EmailSubmissionSetResult, IdentityGetArgs, IdentityGetResult, IdentityObject,
+    IdentitySetArgs, IdentitySetResult, MailboxGetArgs, MailboxGetResult, MailboxObject,
+    MethodCall, MethodResponse, ThreadGetArgs, ThreadGetResult, ThreadObject,
 };
 
 pub struct AccountContext<'a> {
@@ -25,6 +26,7 @@ pub struct AccountContext<'a> {
     pub blobs: &'a BlobStore,
     pub metadata: &'a MetadataStore,
     pub queue: &'a QueueStore,
+    pub auth_store: &'a auth::AuthStore,
     pub account_priv: &'a [u8; crypto::hpke_seal::PRIVATE_KEY_LEN],
     pub account_pub: &'a [u8; crypto::hpke_seal::PUBLIC_KEY_LEN],
     pub key_id: u16,
@@ -33,9 +35,17 @@ pub struct AccountContext<'a> {
     /// may only send as identities they own; enforced by never letting a
     /// client override it, not by validating a client-supplied value).
     pub address: &'a str,
+    /// For sealing/opening account-settings blobs (currently just the
+    /// Identity signature) that aren't mail content and so aren't
+    /// HPKE-sealed to `account_pub` -- symmetric under the account's own
+    /// AMK instead, same as `wrapped_account_priv`.
+    pub amk: &'a crypto::AccountMasterKey,
     /// Runs a full-text query against this session's search index
     /// (building it on first use), returning matching message row ids.
     pub search: &'a dyn Fn(&str) -> common::Result<Vec<i64>>,
+    /// Publishes "this account changed" for the SSE push endpoint. Called
+    /// after any successful mutation in this dispatch table.
+    pub notifier: &'a common::changes::ChangeNotifier,
 }
 
 pub fn dispatch(call: MethodCall, ctx: &AccountContext) -> MethodResponse {
@@ -47,6 +57,8 @@ pub fn dispatch(call: MethodCall, ctx: &AccountContext) -> MethodResponse {
         "Email/set" => email_set(args, &call_id, ctx),
         "EmailSubmission/set" => email_submission_set(args, &call_id, ctx),
         "Thread/get" => thread_get(args, &call_id, ctx),
+        "Identity/get" => identity_get(args, &call_id, ctx),
+        "Identity/set" => identity_set(args, &call_id, ctx),
         other => error_response("unknownMethod", &format!("no such method: {other}"), &call_id),
     }
 }
@@ -355,6 +367,10 @@ fn email_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
         }
     }
 
+    if !result.created.is_empty() || !result.updated.is_empty() || !result.destroyed.is_empty() {
+        ctx.notifier.notify(account_id);
+    }
+
     MethodResponse(
         "Email/set".to_string(),
         serde_json::to_value(result).expect("EmailSetResult always serializes"),
@@ -474,6 +490,8 @@ fn create_draft(
             in_reply_to: in_reply_to_header.as_deref(),
             references_header: references_header.as_deref(),
             subject_hash: subject_hash.as_deref(),
+            spam_score: None,
+            av_clean: None,
         })
         .map_err(|e| e.to_string())?;
 
@@ -508,6 +526,7 @@ fn email_submission_set(args: serde_json::Value, call_id: &str, ctx: &AccountCon
                     key.clone(),
                     serde_json::json!({ "id": format!("s{email_id}"), "emailId": format!("m{email_id}") }),
                 );
+                ctx.notifier.notify(account_id);
             }
             Err(e) => {
                 result
@@ -615,6 +634,121 @@ fn thread_get(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> M
     MethodResponse(
         "Thread/get".to_string(),
         serde_json::to_value(result).expect("ThreadGetResult always serializes"),
+        call_id.to_string(),
+    )
+}
+
+/// Litterae's one identity per account always has id `i{accountId}`.
+fn identity_id(account_id: i64) -> String {
+    format!("i{account_id}")
+}
+
+fn load_identity(ctx: &AccountContext, account_id: i64) -> IdentityObject {
+    let text_signature = ctx
+        .auth_store
+        .get_signature_sealed(account_id)
+        .ok()
+        .flatten()
+        .and_then(|sealed| crypto::aead_open(ctx.amk.as_bytes(), &sealed).ok())
+        .and_then(|opened| String::from_utf8(opened.to_vec()).ok())
+        .unwrap_or_default();
+
+    IdentityObject {
+        id: identity_id(account_id),
+        name: String::new(),
+        email: ctx.address.to_string(),
+        text_signature,
+        may_delete: false,
+    }
+}
+
+fn identity_get(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> MethodResponse {
+    let args: IdentityGetArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return error_response("invalidArguments", &e.to_string(), call_id),
+    };
+    if args.account_id != ctx.account_id_str {
+        return error_response("accountNotFound", "unknown accountId", call_id);
+    }
+    let account_id = parse_account_id(ctx);
+    let identity = load_identity(ctx, account_id);
+
+    let (list, not_found) = match args.ids {
+        None => (vec![identity], Vec::new()),
+        Some(ids) => {
+            let mut list = Vec::new();
+            let mut not_found = Vec::new();
+            for id in ids {
+                if id == identity.id {
+                    list.push(identity.clone());
+                } else {
+                    not_found.push(id);
+                }
+            }
+            (list, not_found)
+        }
+    };
+
+    let result = IdentityGetResult {
+        account_id: ctx.account_id_str.clone(),
+        state: "1".to_string(),
+        list,
+        not_found,
+    };
+    MethodResponse(
+        "Identity/get".to_string(),
+        serde_json::to_value(result).expect("IdentityGetResult always serializes"),
+        call_id.to_string(),
+    )
+}
+
+fn identity_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> MethodResponse {
+    let args: IdentitySetArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return error_response("invalidArguments", &e.to_string(), call_id),
+    };
+    if args.account_id != ctx.account_id_str {
+        return error_response("accountNotFound", "unknown accountId", call_id);
+    }
+    let account_id = parse_account_id(ctx);
+    let this_id = identity_id(account_id);
+
+    let mut result = IdentitySetResult {
+        account_id: ctx.account_id_str.clone(),
+        new_state: "1".to_string(),
+        ..Default::default()
+    };
+
+    for (id, patch) in &args.update {
+        if *id != this_id {
+            result.not_updated.insert(id.clone(), serde_json::json!({"type": "notFound"}));
+            continue;
+        }
+        let Some(text) = &patch.text_signature else {
+            result.updated.insert(id.clone(), serde_json::json!(null));
+            continue;
+        };
+        let sealed = if text.is_empty() {
+            None
+        } else {
+            Some(crypto::aead_seal(ctx.amk.as_bytes(), 1, text.as_bytes()))
+        };
+        match ctx.auth_store.set_signature_sealed(account_id, sealed) {
+            Ok(()) => {
+                result.updated.insert(id.clone(), serde_json::json!(null));
+                ctx.notifier.notify(account_id);
+            }
+            Err(e) => {
+                result
+                    .not_updated
+                    .insert(id.clone(), serde_json::json!({"type": "serverFail", "description": e.to_string()}));
+            }
+        }
+    }
+
+    MethodResponse(
+        "Identity/set".to_string(),
+        serde_json::to_value(result).expect("IdentitySetResult always serializes"),
         call_id.to_string(),
     )
 }

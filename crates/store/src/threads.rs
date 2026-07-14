@@ -146,6 +146,8 @@ mod tests {
             in_reply_to: None,
             references_header: None,
             subject_hash: Some(subject_hash),
+            spam_score: None,
+            av_clean: None,
         }
     }
 

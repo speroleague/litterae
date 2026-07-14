@@ -52,6 +52,7 @@ fn deliver_message(
         raw,
         received_at,
         None,
+        delivery::ScanMetadata::default(),
     )
     .unwrap();
 }
@@ -118,7 +119,7 @@ async fn flag_move_delete_search_and_threads() {
         1_700_000_200,
     );
 
-    let state = AppState::new(auth_store, blobs, metadata.clone(), Arc::new(audit::AuditStore::open_in_memory().unwrap()), Arc::new(cfg), Arc::new(queue::QueueStore::open_in_memory().unwrap()));
+    let state = AppState::new(auth_store, blobs, metadata.clone(), Arc::new(audit::AuditStore::open_in_memory().unwrap()), Arc::new(cfg), Arc::new(queue::QueueStore::open_in_memory().unwrap()), Arc::new(common::changes::ChangeNotifier::new()));
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
     ));
@@ -347,6 +348,7 @@ async fn unread_filter_spans_every_mailbox_and_pagination_reports_a_stable_total
         Arc::new(audit::AuditStore::open_in_memory().unwrap()),
         Arc::new(cfg),
         Arc::new(queue::QueueStore::open_in_memory().unwrap()),
+        Arc::new(common::changes::ChangeNotifier::new()),
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),

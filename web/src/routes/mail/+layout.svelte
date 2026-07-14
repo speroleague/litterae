@@ -3,7 +3,9 @@
 	import { fade, fly } from 'svelte/transition';
 	import { XIcon } from 'phosphor-svelte';
 	import { session } from '$lib/session.svelte';
-	import { mailNav, refreshMailboxes, closeDrawer } from '$lib/mailNav.svelte';
+	import { subscribeToChanges, getIdentity } from '$lib/jmap';
+	import { mailNav, refreshMailboxes, bumpRefresh, closeDrawer } from '$lib/mailNav.svelte';
+	import { setSignature } from '$lib/composeState.svelte';
 	import MailSidebar from '$lib/MailSidebar.svelte';
 	import Compose from '$lib/Compose.svelte';
 
@@ -19,6 +21,29 @@
 		if (session.isUnlocked) {
 			refreshMailboxes();
 		}
+	});
+
+	$effect(() => {
+		const token = session.token;
+		const accountId = session.accountId;
+		if (!token || !accountId) return;
+		getIdentity(token, accountId)
+			.then((identity) => setSignature(identity?.textSignature ?? ''))
+			.catch(() => {});
+	});
+
+	// Live updates (RFC 8620 §7.3 push): re-fetch on any server-side change
+	// to this account -- new mail arriving, a send/archive/delete from
+	// another tab or device -- instead of only ever refreshing after the
+	// user's own actions here.
+	$effect(() => {
+		const token = session.token;
+		if (!token) return;
+		const unsubscribe = subscribeToChanges(token, () => {
+			refreshMailboxes();
+			bumpRefresh();
+		});
+		return unsubscribe;
 	});
 </script>
 

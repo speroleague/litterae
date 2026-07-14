@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { CaretLeftIcon, StarIcon, ArchiveIcon, TrashIcon, ArrowBendUpLeftIcon } from 'phosphor-svelte';
+	import { CaretLeftIcon, StarIcon, ArchiveIcon, TrashIcon, ArrowBendUpLeftIcon, ArrowElbowDownRightIcon } from 'phosphor-svelte';
 	import { session } from '$lib/session.svelte';
 	import {
 		getEmails,
@@ -81,6 +81,15 @@
 	function addressListLabel(addrs: EmailObject['to']): string {
 		return addrs.map((a) => a.name || a.email).join(', ');
 	}
+
+	// Where in the thread this message belongs: which message (if any) it
+	// was a reply to. `threadEmails` only holds siblings, so this is a
+	// lookup, not a fetch.
+	let parentEmail = $derived(
+		email?.inReplyToMessageId
+			? (threadEmails.find((m) => m.messageId === email!.inReplyToMessageId) ?? null)
+			: null
+	);
 
 	function openThreadItem(e: MouseEvent, m: EmailObject) {
 		if (isDraft(m)) {
@@ -238,9 +247,22 @@
 					to {email.to.map(addressLabel).join(', ')} · {fullDate(email.receivedAt)}
 				</div>
 			</div>
+			{#if parentEmail}
+				<a
+					href={`/mail/${parentEmail.id}`}
+					class="mb-3 flex items-center gap-1.5 text-sm transition-colors hover:underline"
+					style="color: var(--text-faint); max-width: 66ch;"
+				>
+					<ArrowElbowDownRightIcon size={14} />
+					<span class="truncate">
+						In reply to {parentEmail.from[0]?.name || parentEmail.from[0]?.email || '(unknown sender)'} ·
+						{fullDate(parentEmail.receivedAt)}
+					</span>
+				</a>
+			{/if}
 			<div
-				class="rounded-[var(--radius)] p-4 text-[16px] leading-relaxed whitespace-pre-wrap"
-				style="background: var(--surface); border: 1px solid var(--border); max-width: 66ch; color: var(--text);"
+				class="overflow-x-auto rounded-[var(--radius)] p-4 text-[16px] leading-relaxed whitespace-pre-wrap"
+				style="background: var(--surface); border: 1px solid var(--border); max-width: 66ch; color: var(--text); overflow-wrap: anywhere;"
 			>
 				{email.bodyText || '(no text body)'}
 			</div>

@@ -47,6 +47,15 @@ pub struct ScanResult {
     /// Fail-open events worth a warn-log + audit entry even though the
     /// message was still let through unscored by that backend.
     pub warnings: Vec<String>,
+    /// rspamd's raw score, independent of `verdict` -- e.g. still `Some`
+    /// for a `Clean`/`NoAction` message, so a client can show "scored
+    /// 1.2/6.0" even when nothing enforcement-worthy happened. `None` if
+    /// rspamd isn't configured or was unreachable this message.
+    pub spam_score: Option<f64>,
+    /// `Some(true)` = clamd scanned and found nothing, `Some(false)` =
+    /// clamd found something (mirrors a `Reject` verdict in that case),
+    /// `None` = not configured or unreachable this message.
+    pub av_clean: Option<bool>,
 }
 
 impl Scanner {
@@ -82,14 +91,23 @@ impl Scanner {
 
         let mut warnings = Vec::new();
 
+        let av_clean = match &clamav_result {
+            Some(Ok(clamav::ClamavVerdict::Clean)) => Some(true),
+            Some(Ok(clamav::ClamavVerdict::Found(_))) => Some(false),
+            Some(Err(e)) => {
+                warnings.push(format!("clamav unreachable: {e}"));
+                None
+            }
+            None => None,
+        };
+
         if let Some(Ok(clamav::ClamavVerdict::Found(sig))) = &clamav_result {
             return ScanResult {
                 verdict: Verdict::Reject { reason: format!("malware detected: {sig}") },
                 warnings,
+                spam_score: None,
+                av_clean,
             };
-        }
-        if let Some(Err(e)) = &clamav_result {
-            warnings.push(format!("clamav unreachable: {e}"));
         }
 
         let rspamd_verdict = match rspamd_result {
@@ -100,6 +118,7 @@ impl Scanner {
             }
             None => None,
         };
+        let spam_score = rspamd_verdict.as_ref().map(|v| v.score);
 
         let verdict = match rspamd_verdict {
             None => Verdict::Clean,
@@ -121,7 +140,7 @@ impl Scanner {
             },
         };
 
-        ScanResult { verdict, warnings }
+        ScanResult { verdict, warnings, spam_score, av_clean }
     }
 
     async fn run_rspamd(&self, req: &ScanRequest<'_>) -> Option<common::Result<rspamd::RspamdVerdict>> {

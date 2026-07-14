@@ -43,7 +43,9 @@ CREATE TABLE IF NOT EXISTS messages (
     message_id_header   TEXT,
     in_reply_to         TEXT,
     references_header   TEXT,
-    subject_hash        TEXT
+    subject_hash        TEXT,
+    spam_score          REAL,
+    av_clean            INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_messages_account ON messages(account_id, received_at);
 CREATE INDEX IF NOT EXISTS ix_messages_mailbox ON messages(account_id, mailbox_id, received_at);
@@ -51,6 +53,29 @@ CREATE INDEX IF NOT EXISTS ix_messages_thread ON messages(account_id, thread_id)
 CREATE INDEX IF NOT EXISTS ix_messages_message_id ON messages(account_id, message_id_header);
 CREATE INDEX IF NOT EXISTS ix_messages_subject_hash ON messages(account_id, subject_hash);
 "#;
+
+/// Adds columns introduced after this table's initial release (see
+/// `admin::store::migrate_domains_columns` for the same pattern) -- a
+/// fresh database already gets these from `SCHEMA` above and this is a
+/// no-op for it.
+pub(crate) fn migrate_columns(conn: &rusqlite::Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(messages)").map_err(storage_err)?;
+    let existing: Vec<String> = stmt
+        .query_map((), |row| row.get::<_, String>(1))
+        .map_err(storage_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(storage_err)?;
+
+    if !existing.iter().any(|c| c == "spam_score") {
+        conn.execute("ALTER TABLE messages ADD COLUMN spam_score REAL", ())
+            .map_err(storage_err)?;
+    }
+    if !existing.iter().any(|c| c == "av_clean") {
+        conn.execute("ALTER TABLE messages ADD COLUMN av_clean INTEGER", ())
+            .map_err(storage_err)?;
+    }
+    Ok(())
+}
 
 pub struct NewMessage<'a> {
     pub account_id: i64,
@@ -71,9 +96,16 @@ pub struct NewMessage<'a> {
     pub in_reply_to: Option<&'a str>,
     pub references_header: Option<&'a str>,
     pub subject_hash: Option<&'a str>,
+    /// rspamd's raw score, independent of any enforcement action --
+    /// `None` if antispam scanning wasn't configured/reachable for this
+    /// message (a draft/sent message is never scanned at all).
+    pub spam_score: Option<f64>,
+    /// `Some(true)` = clamd scanned and found nothing, `Some(false)` =
+    /// clamd found something, `None` = not scanned.
+    pub av_clean: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StoredMessage {
     pub id: i64,
     pub account_id: i64,
@@ -94,11 +126,13 @@ pub struct StoredMessage {
     pub in_reply_to: Option<String>,
     pub references_header: Option<String>,
     pub subject_hash: Option<String>,
+    pub spam_score: Option<f64>,
+    pub av_clean: Option<bool>,
 }
 
 const MESSAGE_COLUMNS: &str = "id, account_id, mailbox_id, thread_id, blob_hash, dek_wrap, mail_from, rcpt_to,
      remote_ip, size_bytes, spf_result, dkim_result, dmarc_result, received_at, keywords,
-     message_id_header, in_reply_to, references_header, subject_hash";
+     message_id_header, in_reply_to, references_header, subject_hash, spam_score, av_clean";
 
 impl MetadataStore {
     pub fn insert_message(&self, msg: &NewMessage) -> Result<i64> {
@@ -107,8 +141,9 @@ impl MetadataStore {
             "INSERT INTO messages
                 (account_id, mailbox_id, thread_id, blob_hash, dek_wrap, mail_from, rcpt_to,
                  remote_ip, size_bytes, spf_result, dkim_result, dmarc_result, received_at,
-                 keywords, message_id_header, in_reply_to, references_header, subject_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                 keywords, message_id_header, in_reply_to, references_header, subject_hash,
+                 spam_score, av_clean)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             rusqlite::params![
                 msg.account_id,
                 msg.mailbox_id,
@@ -128,6 +163,8 @@ impl MetadataStore {
                 msg.in_reply_to,
                 msg.references_header,
                 msg.subject_hash,
+                msg.spam_score,
+                msg.av_clean,
             ],
         )
         .map_err(storage_err)?;
@@ -279,6 +316,8 @@ fn row_to_message(row: &rusqlite::Row) -> rusqlite::Result<StoredMessage> {
         in_reply_to: row.get(16)?,
         references_header: row.get(17)?,
         subject_hash: row.get(18)?,
+        spam_score: row.get(19)?,
+        av_clean: row.get(20)?,
     })
 }
 
@@ -306,6 +345,8 @@ mod tests {
             in_reply_to: None,
             references_header: None,
             subject_hash: Some("abc123"),
+            spam_score: None,
+            av_clean: None,
         }
     }
 

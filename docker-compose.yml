@@ -27,6 +27,16 @@ services:
     volumes:
       - litterae-data:/data
       - litterae-logs:/var/log/litterae
+      # World-readable copies of Caddy's cert for MAIL_HOSTNAME, kept in
+      # sync by cert-sync below -- lets submission (587/465) share the
+      # same Let's Encrypt cert Caddy already holds, without a second
+      # ACME client. Unused unless submission.tls_cert_path/tls_key_path
+      # are set via the escape hatch below; see README's "A note on
+      # submission" section. (Caddy's own cert storage is 0700-owned by
+      # root -- litterae runs as its own non-root user and can't read it
+      # directly, which is why this goes through cert-sync instead of a
+      # direct mount of caddy-data.)
+      - submission-certs:/submission-certs:ro
       # Escape hatch: bind-mount a hand-written config to skip the
       # .env-driven template entirely (docker/entrypoint.sh only
       # generates one if this path doesn't already exist).
@@ -79,6 +89,42 @@ services:
     depends_on:
       - litterae
 
+  # Copies Caddy's cert for MAIL_HOSTNAME out of Caddy's own (root-only,
+  # 0700) storage into a world-readable location litterae's non-root user
+  # can read -- see the litterae service's `submission-certs` mount above.
+  # Re-copies hourly so a Let's Encrypt renewal doesn't go stale here;
+  # restart the litterae container afterwards to pick up a renewed cert
+  # (see README's "A note on submission"). Entirely inert/unused unless
+  # submission TLS is explicitly enabled via the litterae.toml escape
+  # hatch -- safe to leave running otherwise.
+  cert-sync:
+    image: alpine:3.22
+    restart: unless-stopped
+    environment:
+      MAIL_HOSTNAME: ${MAIL_HOSTNAME}
+    volumes:
+      - caddy-data:/caddy-data:ro
+      - submission-certs:/out
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        while true; do
+          src="/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/$$MAIL_HOSTNAME"
+          # Local-testing fallback: Caddyfile.local uses Caddy's internal
+          # CA instead of real ACME, which files certs under "local".
+          [ -d "$$src" ] || src="/caddy-data/caddy/certificates/local/$$MAIL_HOSTNAME"
+          if [ -f "$$src/$$MAIL_HOSTNAME.crt" ]; then
+            cp "$$src/$$MAIL_HOSTNAME.crt" /out/submission.crt.tmp
+            cp "$$src/$$MAIL_HOSTNAME.key" /out/submission.key.tmp
+            chmod 644 /out/submission.crt.tmp /out/submission.key.tmp
+            mv /out/submission.crt.tmp /out/submission.crt
+            mv /out/submission.key.tmp /out/submission.key
+          fi
+          sleep 3600
+        done
+
 volumes:
   litterae-data:
   litterae-logs:
@@ -87,3 +133,4 @@ volumes:
   caddy-data:
   caddy-config:
   crowdsec-data:
+  submission-certs:

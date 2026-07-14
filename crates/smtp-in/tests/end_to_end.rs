@@ -68,6 +68,7 @@ async fn real_message_lands_decrypts_on_unlock_dkim_stored() {
         tls_acceptor: None,
         scanner: Arc::new(scan::Scanner::new(None, None)),
         audit: test_audit_store(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -180,6 +181,7 @@ async fn catch_all_delivers_to_configured_mailbox() {
         tls_acceptor: None,
         scanner: Arc::new(scan::Scanner::new(None, None)),
         audit: test_audit_store(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -251,6 +253,7 @@ async fn unknown_recipient_is_rejected_no_open_relay() {
         tls_acceptor: None,
         scanner: Arc::new(scan::Scanner::new(None, None)),
         audit: test_audit_store(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -306,6 +309,7 @@ async fn oversized_message_is_rejected_early() {
         tls_acceptor: None,
         scanner: Arc::new(scan::Scanner::new(None, None)),
         audit: test_audit_store(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -382,6 +386,7 @@ async fn starttls_upgrades_and_delivers_over_encrypted_channel() {
         tls_acceptor: Some(tls_acceptor),
         scanner: Arc::new(scan::Scanner::new(None, None)),
         audit: test_audit_store(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -576,6 +581,7 @@ async fn rspamd_add_header_routes_message_to_junk() {
         tls_acceptor: None,
         scanner,
         audit: test_audit_store(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
     });
 
     let reply = deliver_one_message(deps, "alice@example.com", "spammy subject").await;
@@ -617,6 +623,7 @@ async fn rspamd_reject_gets_5xx_and_no_delivery() {
         tls_acceptor: None,
         scanner,
         audit: test_audit_store(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
     });
 
     let reply = deliver_one_message(deps, "alice@example.com", "spam").await;
@@ -653,6 +660,7 @@ async fn clamav_found_gets_5xx_and_no_delivery() {
         tls_acceptor: None,
         scanner,
         audit: test_audit_store(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
     });
 
     let reply = deliver_one_message(deps, "alice@example.com", "eicar").await;
@@ -690,6 +698,7 @@ async fn unreachable_scanner_fails_open_to_inbox() {
         tls_acceptor: None,
         scanner,
         audit: audit.clone(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
     });
 
     let reply = deliver_one_message(deps, "alice@example.com", "normal mail").await;

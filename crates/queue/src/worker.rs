@@ -48,6 +48,7 @@ pub struct Worker {
     resolver: Resolver,
     hostname: String,
     cooldowns: Mutex<HashMap<String, Instant>>,
+    notifier: Arc<common::changes::ChangeNotifier>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +76,7 @@ enum Connected {
 }
 
 impl Worker {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         queue: QueueStore,
         blobs: BlobStore,
@@ -83,6 +85,7 @@ impl Worker {
         audit: Arc<audit::AuditStore>,
         resolver: Resolver,
         hostname: String,
+        notifier: Arc<common::changes::ChangeNotifier>,
     ) -> Self {
         Self {
             queue,
@@ -93,6 +96,7 @@ impl Worker {
             resolver,
             hostname,
             cooldowns: Mutex::new(HashMap::new()),
+            notifier,
         }
     }
 
@@ -449,7 +453,7 @@ impl Worker {
             dkim: "n/a".into(),
             dmarc: "n/a".into(),
         };
-        if let Err(e) = delivery::deliver(
+        match delivery::deliver(
             &self.blobs,
             &self.metadata,
             &recipient_account,
@@ -458,8 +462,10 @@ impl Worker {
             &dsn_bytes,
             now_unix(),
             None,
+            delivery::ScanMetadata::default(),
         ) {
-            tracing::error!(error = %e, "failed to deliver DSN locally");
+            Ok(_) => self.notifier.notify(account.id),
+            Err(e) => tracing::error!(error = %e, "failed to deliver DSN locally"),
         }
     }
 }
@@ -543,7 +549,7 @@ mod tests {
         let resolver = Resolver::new().unwrap();
         let audit = Arc::new(audit::AuditStore::open_in_memory().unwrap());
         audit.bootstrap_keys(&[7u8; 32]).unwrap();
-        let worker = Worker::new(queue, blobs, metadata, auth_store, audit, resolver, "mx.example.com".to_string());
+        let worker = Worker::new(queue, blobs, metadata, auth_store, audit, resolver, "mx.example.com".to_string(), Arc::new(common::changes::ChangeNotifier::new()));
         (worker, account.id)
     }
 

@@ -48,6 +48,7 @@ impl MetadataStore {
             .map_err(storage_err)?;
         conn.execute_batch(crate::messages::SCHEMA)
             .map_err(storage_err)?;
+        crate::messages::migrate_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -62,6 +63,7 @@ impl MetadataStore {
             .map_err(storage_err)?;
         conn.execute_batch(crate::messages::SCHEMA)
             .map_err(storage_err)?;
+        crate::messages::migrate_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })

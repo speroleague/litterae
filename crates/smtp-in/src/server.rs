@@ -25,6 +25,7 @@ pub async fn run(
     metadata: Arc<MetadataStore>,
     scanner: Arc<scan::Scanner>,
     audit: Arc<audit::AuditStore>,
+    notifier: Arc<common::changes::ChangeNotifier>,
 ) -> Result<()> {
     let tls_acceptor = load_acceptor(config)?;
     let authenticator = Arc::new(
@@ -43,6 +44,7 @@ pub async fn run(
         tls_acceptor,
         scanner,
         audit,
+        notifier,
     });
 
     let listener = TcpListener::bind(&config.listen_addr)

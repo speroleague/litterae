@@ -33,7 +33,6 @@ pub struct SessionIdentity {
 struct Session {
     account_id: i64,
     account_priv: Zeroizing<[u8; crypto::hpke_seal::PRIVATE_KEY_LEN]>,
-    #[allow(dead_code)] // not read yet -- write-path phases will need it for rewrap operations.
     amk: AccountMasterKey,
     identity: SessionIdentity,
     last_seen: Instant,
@@ -105,14 +104,22 @@ impl SessionRegistry {
     }
 
     /// Runs `f` with the session's account id, private key, search index,
-    /// and identity (public key/key_id/address, for compose+send) together
-    /// in one locked section -- these can't be composed by calling separate
-    /// accessors, since that would lock this registry's mutex twice on one
-    /// request.
+    /// identity (public key/key_id/address, for compose+send), and AMK (for
+    /// sealing/opening account-settings blobs like the signature, which
+    /// aren't HPKE-sealed mail content) together in one locked section --
+    /// these can't be composed by calling separate accessors, since that
+    /// would lock this registry's mutex twice on one request.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_session<T>(
         &self,
         token: &str,
-        f: impl FnOnce(i64, &[u8; crypto::hpke_seal::PRIVATE_KEY_LEN], &SearchIndex, &SessionIdentity) -> T,
+        f: impl FnOnce(
+            i64,
+            &[u8; crypto::hpke_seal::PRIVATE_KEY_LEN],
+            &SearchIndex,
+            &SessionIdentity,
+            &AccountMasterKey,
+        ) -> T,
     ) -> Option<T> {
         let mut sessions = self.sessions.lock().expect("session registry mutex poisoned");
         let session = sessions.get_mut(token)?;
@@ -126,6 +133,7 @@ impl SessionRegistry {
             &session.account_priv,
             &session.search_index,
             &session.identity,
+            &session.amk,
         ))
     }
 
@@ -209,7 +217,7 @@ mod tests {
         let expected_priv = *unlocked.account_priv;
         let token = reg.create(9, unlocked, sample_identity());
 
-        let result = reg.with_session(&token, |account_id, priv_key, _search_index, _identity| {
+        let result = reg.with_session(&token, |account_id, priv_key, _search_index, _identity, _amk| {
             assert_eq!(account_id, 9);
             *priv_key
         });

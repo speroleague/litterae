@@ -56,6 +56,10 @@ pub fn open_and_parse(
         preview,
         body_text,
         size: stored.size_bytes,
+        message_id: stored.message_id_header.clone(),
+        in_reply_to_message_id: stored.in_reply_to.clone(),
+        spam_score: stored.spam_score,
+        av_clean: stored.av_clean,
     })
 }
 

@@ -37,6 +37,10 @@ pub struct AppState {
     /// (`EmailSubmission/set`), everything else in this crate is read-only
     /// against `metadata`/`blobs`.
     pub queue_store: Arc<QueueStore>,
+    /// Backs the `/jmap/sse` push endpoint -- shared with smtp-in and the
+    /// outbound worker so inbound delivery and DSNs also wake up an open
+    /// SSE stream, not just this crate's own mutations.
+    pub notifier: Arc<common::changes::ChangeNotifier>,
 }
 
 impl AppState {
@@ -48,6 +52,7 @@ impl AppState {
         audit_store: Arc<AuditStore>,
         argon2_config: Arc<Argon2Config>,
         queue_store: Arc<QueueStore>,
+        notifier: Arc<common::changes::ChangeNotifier>,
     ) -> Self {
         Self {
             auth_store,
@@ -58,6 +63,7 @@ impl AppState {
             sessions: Arc::new(SessionRegistry::new(DEFAULT_IDLE_TIMEOUT)),
             login_throttle: Arc::new(LoginThrottle::new(THROTTLE_BASE_DELAY, THROTTLE_MAX_DELAY)),
             queue_store,
+            notifier,
         }
     }
 }

@@ -37,6 +37,9 @@ pub struct Deps {
     pub tls_acceptor: Option<TlsAcceptor>,
     pub scanner: Arc<Scanner>,
     pub audit: Arc<audit::AuditStore>,
+    /// Wakes up any open JMAP SSE stream for the recipient's account once
+    /// a message actually lands -- see `common::changes::ChangeNotifier`.
+    pub notifier: Arc<common::changes::ChangeNotifier>,
 }
 
 #[derive(Default)]
@@ -239,6 +242,14 @@ where
                             let _ = deps.audit.log("smtp.scan_unreachable", warning);
                         }
 
+                        // Captured before the match below moves `verdict`
+                        // out of `scan_result` -- these are independent,
+                        // Copy fields (see `scan::ScanResult`'s doc).
+                        let scan_meta = delivery::ScanMetadata {
+                            spam_score: scan_result.spam_score,
+                            av_clean: scan_result.av_clean,
+                        };
+
                         let spam_reason = match scan_result.verdict {
                             Verdict::Reject { reason } => {
                                 tracing::warn!(%remote_ip, reason = %reason, "rejecting message: scanner verdict");
@@ -277,6 +288,7 @@ where
                                 &raw,
                                 received_at,
                                 spam_reason.as_deref(),
+                                scan_meta,
                             ) {
                                 Ok(()) => delivered_any = true,
                                 Err(e) => {
@@ -358,6 +370,7 @@ fn deliver_one(
     raw: &[u8],
     received_at: i64,
     spam_reason: Option<&str>,
+    scan: delivery::ScanMetadata,
 ) -> common::Result<()> {
     let inbound_envelope = InboundEnvelope {
         mail_from: envelope.mail_from.clone().unwrap_or_default(),
@@ -378,7 +391,9 @@ fn deliver_one(
         raw,
         received_at,
         spam_reason,
+        scan,
     )?;
+    deps.notifier.notify(account.id);
     Ok(())
 }
 

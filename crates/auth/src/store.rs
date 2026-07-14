@@ -33,6 +33,27 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 "#;
 
+/// Adds columns introduced after this table's initial release. Additive
+/// only (see `admin::store::migrate_domains_columns` for the same
+/// pattern) -- a fresh database already gets this column from `SCHEMA`
+/// above and this is a no-op for it.
+fn migrate_accounts_columns(conn: &Connection) -> Result<()> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(accounts)")
+        .map_err(storage_err)?;
+    let existing: Vec<String> = stmt
+        .query_map((), |row| row.get::<_, String>(1))
+        .map_err(storage_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(storage_err)?;
+
+    if !existing.iter().any(|c| c == "signature_sealed") {
+        conn.execute("ALTER TABLE accounts ADD COLUMN signature_sealed BLOB", ())
+            .map_err(storage_err)?;
+    }
+    Ok(())
+}
+
 fn storage_err(e: rusqlite::Error) -> Error {
     Error::Storage(e.to_string())
 }
@@ -63,6 +84,7 @@ impl AuthStore {
         conn.pragma_update(None, "synchronous", "FULL")
             .map_err(storage_err)?;
         conn.execute_batch(SCHEMA).map_err(storage_err)?;
+        migrate_accounts_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -71,6 +93,7 @@ impl AuthStore {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(storage_err)?;
         conn.execute_batch(SCHEMA).map_err(storage_err)?;
+        migrate_accounts_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -216,6 +239,32 @@ impl AuthStore {
         account_priv.copy_from_slice(&priv_bytes);
         Ok(UnlockedAccount { amk, account_priv })
     }
+
+    /// Raw sealed signature blob (`crypto::aead_seal`'d under the account's
+    /// AMK by the caller -- this store just persists opaque bytes, same
+    /// separation as `wrapped_amk`/`wrapped_account_priv`).
+    pub fn get_signature_sealed(&self, account_id: i64) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn.lock().expect("auth store mutex poisoned");
+        conn.query_row(
+            "SELECT signature_sealed FROM accounts WHERE id = ?1",
+            (account_id,),
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        )
+        .optional()
+        .map_err(storage_err)
+        .map(Option::flatten)
+    }
+
+    /// `None` clears the signature.
+    pub fn set_signature_sealed(&self, account_id: i64, sealed: Option<Vec<u8>>) -> Result<()> {
+        let conn = self.conn.lock().expect("auth store mutex poisoned");
+        conn.execute(
+            "UPDATE accounts SET signature_sealed = ?1 WHERE id = ?2",
+            (sealed, account_id),
+        )
+        .map_err(storage_err)?;
+        Ok(())
+    }
 }
 
 fn row_to_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
@@ -339,6 +388,21 @@ mod tests {
         let just_example_com = store.list_accounts_for_domain("example.com").unwrap();
         assert_eq!(just_example_com.len(), 1);
         assert_eq!(just_example_com[0].local_part, "alice");
+    }
+
+    #[test]
+    fn signature_defaults_to_none_then_round_trips() {
+        let store = AuthStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        let account = store.provision("alice", "example.com", b"pw", &cfg).unwrap();
+
+        assert_eq!(store.get_signature_sealed(account.id).unwrap(), None);
+
+        store.set_signature_sealed(account.id, Some(b"sealed bytes".to_vec())).unwrap();
+        assert_eq!(store.get_signature_sealed(account.id).unwrap(), Some(b"sealed bytes".to_vec()));
+
+        store.set_signature_sealed(account.id, None).unwrap();
+        assert_eq!(store.get_signature_sealed(account.id).unwrap(), None);
     }
 
     #[test]

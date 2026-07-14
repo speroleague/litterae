@@ -7,12 +7,13 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::Json;
 use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
 use crate::api::{dispatch, AccountContext};
 use crate::session_store::SessionIdentity;
@@ -154,7 +155,7 @@ pub async fn jmap_api(
         // index come from the same locked section (see with_session's
         // doc) so a text-search filter doesn't need to re-lock the
         // registry.
-        let response = state.sessions.with_session(token, |account_id, account_priv, search_index, identity| {
+        let response = state.sessions.with_session(token, |account_id, account_priv, search_index, identity, amk| {
             let search_fn = |query: &str| -> common::Result<Vec<i64>> {
                 search_index.search(&state.blobs, &state.metadata, account_id, account_priv, query)
             };
@@ -163,11 +164,14 @@ pub async fn jmap_api(
                 blobs: &state.blobs,
                 metadata: &state.metadata,
                 queue: &state.queue_store,
+                auth_store: &state.auth_store,
                 account_priv,
                 account_pub: &identity.account_pub,
                 key_id: identity.key_id,
                 address: &identity.address,
+                amk,
                 search: &search_fn,
+                notifier: &state.notifier,
             };
             dispatch(call, &ctx)
         });
@@ -180,21 +184,66 @@ pub async fn jmap_api(
     Ok(Json(Response { method_responses }))
 }
 
+#[derive(Deserialize)]
+pub struct SseQuery {
+    /// `EventSource` can't set an `Authorization` header, so this is the
+    /// only way a browser push connection can authenticate -- accepted
+    /// here in addition to (not instead of) the header, which any
+    /// non-browser JMAP client should keep using. Tradeoff accepted
+    /// deliberately: this token is bearer-only, read-only in effect (SSE
+    /// never accepts input), and no worse-exposed than any other query
+    /// string an access log might capture.
+    token: Option<String>,
+}
+
 pub async fn sse(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<SseQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
-    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    state
+    let token = bearer_token(&headers)
+        .map(str::to_string)
+        .or(query.token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let account_id = state
         .sessions
-        .account_id(token)
+        .account_id(&token)
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // Heartbeat only for now; real state-change push needs a broadcast
-    // channel from the delivery path into open SSE connections.
-    let stream = stream::unfold((), |_| async {
-        tokio::time::sleep(Duration::from_secs(30)).await;
-        Some((Ok(Event::default().comment("heartbeat")), ()))
+    let rx = state.notifier.subscribe();
+    let stream = stream::unfold((rx, account_id), |(mut rx, account_id)| async move {
+        loop {
+            tokio::select! {
+                changed = rx.recv() => {
+                    match changed {
+                        Ok(c) if c.account_id == account_id => {
+                            let payload = serde_json::json!({
+                                "@type": "StateChange",
+                                "changed": {
+                                    account_id.to_string(): {
+                                        "Mailbox": c.state.to_string(),
+                                        "Email": c.state.to_string(),
+                                    }
+                                }
+                            });
+                            let event = Event::default().event("state").data(payload.to_string());
+                            return Some((Ok(event), (rx, account_id)));
+                        }
+                        // Not this connection's account -- keep waiting,
+                        // don't emit anything for it.
+                        Ok(_) => continue,
+                        // A slow consumer missed some notifications; not
+                        // fatal, just re-fetch will catch it up (same
+                        // effect as coalescing several "changed" events).
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => return None,
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                    return Some((Ok(Event::default().comment("heartbeat")), (rx, account_id)));
+                }
+            }
+        }
     });
     Ok(Sse::new(stream))
 }

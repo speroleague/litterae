@@ -158,13 +158,19 @@ impl AdminStore {
             return Ok(None);
         }
         let salt = Salt::generate();
-        let pk = derive_pk(password, &salt, argon2_config).map_err(|e| Error::Crypto(e.to_string()))?;
+        let pk =
+            derive_pk(password, &salt, argon2_config).map_err(|e| Error::Crypto(e.to_string()))?;
 
         let conn = self.conn.lock().expect("admin store mutex poisoned");
         conn.execute(
             "INSERT INTO admins (username, salt, derived_key, must_change_password, created_at)
              VALUES (?1, ?2, ?3, 1, ?4)",
-            rusqlite::params![username, salt.0.as_slice(), pk.as_bytes().as_slice(), now_unix()],
+            rusqlite::params![
+                username,
+                salt.0.as_slice(),
+                pk.as_bytes().as_slice(),
+                now_unix()
+            ],
         )
         .map_err(storage_err)?;
         Ok(Some(*pk.as_bytes()))
@@ -217,7 +223,8 @@ impl AdminStore {
         }
         salt_arr.copy_from_slice(&salt_bytes);
         let salt = Salt::from_bytes(salt_arr);
-        let pk = derive_pk(password, &salt, argon2_config).map_err(|e| Error::Crypto(e.to_string()))?;
+        let pk =
+            derive_pk(password, &salt, argon2_config).map_err(|e| Error::Crypto(e.to_string()))?;
 
         if pk.as_bytes().as_slice().ct_eq(&stored_derived).unwrap_u8() != 1 {
             return Ok(None);
@@ -254,7 +261,8 @@ impl AdminStore {
         argon2_config: &Argon2Config,
     ) -> Result<[u8; 32]> {
         let salt = Salt::generate();
-        let pk = derive_pk(new_password, &salt, argon2_config).map_err(|e| Error::Crypto(e.to_string()))?;
+        let pk = derive_pk(new_password, &salt, argon2_config)
+            .map_err(|e| Error::Crypto(e.to_string()))?;
         let conn = self.conn.lock().expect("admin store mutex poisoned");
         conn.execute(
             "UPDATE admins SET salt = ?1, derived_key = ?2, must_change_password = 0 WHERE id = ?3",
@@ -273,7 +281,8 @@ impl AdminStore {
             )
             .map_err(storage_err)?;
         let rows = stmt.query_map((), row_to_domain).map_err(storage_err)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(storage_err)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err)
     }
 
     pub fn get_domain(&self, id: i64) -> Result<Option<Domain>> {
@@ -289,6 +298,7 @@ impl AdminStore {
     }
 
     pub fn get_domain_by_name(&self, name: &str) -> Result<Option<Domain>> {
+        let name = name.to_ascii_lowercase();
         let conn = self.conn.lock().expect("admin store mutex poisoned");
         conn.query_row(
             "SELECT id, name, catch_all_local_part, verification_token, verified_at, created_at \
@@ -301,18 +311,22 @@ impl AdminStore {
     }
 
     pub fn create_domain(&self, name: &str, catch_all_local_part: Option<&str>) -> Result<Domain> {
+        if !common::input::valid_domain_name(name) {
+            return Err(Error::Config("invalid domain name".to_string()));
+        }
+        let name = name.to_ascii_lowercase();
         let created_at = now_unix();
         let verification_token = generate_verification_token();
         let conn = self.conn.lock().expect("admin store mutex poisoned");
         conn.execute(
             "INSERT INTO domains (name, catch_all_local_part, verification_token, created_at) \
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![name, catch_all_local_part, verification_token, created_at],
+            rusqlite::params![&name, catch_all_local_part, verification_token, created_at],
         )
         .map_err(storage_err)?;
         Ok(Domain {
             id: conn.last_insert_rowid(),
-            name: name.to_string(),
+            name,
             catch_all_local_part: catch_all_local_part.map(str::to_string),
             verification_token,
             verified_at: None,
@@ -390,7 +404,10 @@ mod tests {
         store.bootstrap("admin", b"change-me-please", &cfg).unwrap();
         assert!(store.has_admin().unwrap());
 
-        let (admin, _pk) = store.verify_login("admin", b"change-me-please", &cfg).unwrap().unwrap();
+        let (admin, _pk) = store
+            .verify_login("admin", b"change-me-please", &cfg)
+            .unwrap()
+            .unwrap();
         assert!(admin.must_change_password);
     }
 
@@ -404,8 +421,14 @@ mod tests {
         // startup) must not reset the password.
         store.bootstrap("admin", b"second-password", &cfg).unwrap();
 
-        assert!(store.verify_login("admin", b"first-password", &cfg).unwrap().is_some());
-        assert!(store.verify_login("admin", b"second-password", &cfg).unwrap().is_none());
+        assert!(store
+            .verify_login("admin", b"first-password", &cfg)
+            .unwrap()
+            .is_some());
+        assert!(store
+            .verify_login("admin", b"second-password", &cfg)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -413,7 +436,10 @@ mod tests {
         let store = AdminStore::open_in_memory().unwrap();
         let cfg = fast_config();
         store.bootstrap("admin", b"correct", &cfg).unwrap();
-        assert!(store.verify_login("admin", b"wrong", &cfg).unwrap().is_none());
+        assert!(store
+            .verify_login("admin", b"wrong", &cfg)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -421,12 +447,23 @@ mod tests {
         let store = AdminStore::open_in_memory().unwrap();
         let cfg = fast_config();
         store.bootstrap("admin", b"initial", &cfg).unwrap();
-        let (admin, _pk) = store.verify_login("admin", b"initial", &cfg).unwrap().unwrap();
+        let (admin, _pk) = store
+            .verify_login("admin", b"initial", &cfg)
+            .unwrap()
+            .unwrap();
 
-        store.change_password(admin.id, b"new-password", &cfg).unwrap();
+        store
+            .change_password(admin.id, b"new-password", &cfg)
+            .unwrap();
 
-        assert!(store.verify_login("admin", b"initial", &cfg).unwrap().is_none());
-        let (updated, _pk) = store.verify_login("admin", b"new-password", &cfg).unwrap().unwrap();
+        assert!(store
+            .verify_login("admin", b"initial", &cfg)
+            .unwrap()
+            .is_none());
+        let (updated, _pk) = store
+            .verify_login("admin", b"new-password", &cfg)
+            .unwrap()
+            .unwrap();
         assert!(!updated.must_change_password);
     }
 
@@ -470,7 +507,9 @@ mod tests {
     fn mark_domain_verified_sets_the_timestamp() {
         let store = AdminStore::open_in_memory().unwrap();
         let domain = store.create_domain("example.com", None).unwrap();
-        store.mark_domain_verified(domain.id, 1_700_000_000).unwrap();
+        store
+            .mark_domain_verified(domain.id, 1_700_000_000)
+            .unwrap();
         let updated = store.get_domain(domain.id).unwrap().unwrap();
         assert_eq!(updated.verified_at, Some(1_700_000_000));
     }

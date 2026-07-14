@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use common::config::Argon2Config;
 use common::{Error, Result};
 use crypto::{
-    derive_pk, unwrap_amk, unwrap_priv_key, wrap_amk, wrap_priv_key, AccountMasterKey,
-    HpkeKeypair, Salt,
+    derive_pk, unwrap_amk, unwrap_priv_key, wrap_amk, wrap_priv_key, AccountMasterKey, HpkeKeypair,
+    Salt,
 };
 use zeroize::Zeroizing;
 
@@ -111,6 +111,11 @@ impl AuthStore {
         password: &[u8],
         argon2_config: &Argon2Config,
     ) -> Result<Account> {
+        if !common::input::valid_local_part(local_part) || !common::input::valid_domain_name(domain)
+        {
+            return Err(Error::Config("invalid mailbox address".to_string()));
+        }
+        let domain = domain.to_ascii_lowercase();
         let salt = Salt::generate();
         let pk =
             derive_pk(password, &salt, argon2_config).map_err(|e| Error::Crypto(e.to_string()))?;
@@ -128,7 +133,7 @@ impl AuthStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 local_part,
-                domain,
+                &domain,
                 1i64,
                 salt.0.as_slice(),
                 wrapped_amk,
@@ -143,7 +148,7 @@ impl AuthStore {
         Ok(Account {
             id,
             local_part: local_part.to_string(),
-            domain: domain.to_string(),
+            domain,
             key_id: 1,
             salt: salt.0,
             wrapped_amk,
@@ -157,6 +162,7 @@ impl AuthStore {
     /// cleartext along with everything else -- callers on the inbound path
     /// (RCPT TO validation, delivery sealing) never need to unlock.
     pub fn find_by_address(&self, local_part: &str, domain: &str) -> Result<Option<Account>> {
+        let domain = domain.to_ascii_lowercase();
         let conn = self.conn.lock().expect("auth store mutex poisoned");
         conn.query_row(
             "SELECT id, local_part, domain, key_id, salt, wrapped_amk, account_pub, wrapped_account_priv, created_at
@@ -192,7 +198,8 @@ impl AuthStore {
             )
             .map_err(storage_err)?;
         let rows = stmt.query_map((), row_to_account).map_err(storage_err)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(storage_err)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err)
     }
 
     /// Lists accounts for one domain -- used to check whether a domain has
@@ -208,7 +215,8 @@ impl AuthStore {
         let rows = stmt
             .query_map((domain,), row_to_account)
             .map_err(storage_err)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(storage_err)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err)
     }
 
     pub fn delete_account(&self, id: i64) -> Result<()> {
@@ -317,7 +325,10 @@ mod tests {
         assert_eq!(found.account_pub, account.account_pub);
         assert_eq!(found.address(), "alice@example.com");
 
-        let by_id = store.find_by_id(account.id).unwrap().expect("account should exist");
+        let by_id = store
+            .find_by_id(account.id)
+            .unwrap()
+            .expect("account should exist");
         assert_eq!(by_id.address(), "alice@example.com");
         assert!(store.find_by_id(999_999).unwrap().is_none());
     }
@@ -346,8 +357,8 @@ mod tests {
         // The recovered private key must actually pair with the cleartext
         // public key stored on the account: seal to account_pub, open with
         // the unlocked private key.
-        let sealed = crypto::hpke_seal(&account.account_pub, account.key_id, b"info", b"secret")
-            .unwrap();
+        let sealed =
+            crypto::hpke_seal(&account.account_pub, account.key_id, b"info", b"secret").unwrap();
         let opened = crypto::hpke_open(&unlocked.account_priv, b"info", &sealed).unwrap();
         assert_eq!(&opened[..], b"secret");
     }
@@ -379,8 +390,12 @@ mod tests {
     fn list_accounts_returns_everyone() {
         let store = AuthStore::open_in_memory().unwrap();
         let cfg = fast_config();
-        store.provision("alice", "example.com", b"pw", &cfg).unwrap();
-        store.provision("bob", "other.example", b"pw", &cfg).unwrap();
+        store
+            .provision("alice", "example.com", b"pw", &cfg)
+            .unwrap();
+        store
+            .provision("bob", "other.example", b"pw", &cfg)
+            .unwrap();
 
         let all = store.list_accounts().unwrap();
         assert_eq!(all.len(), 2);
@@ -394,12 +409,19 @@ mod tests {
     fn signature_defaults_to_none_then_round_trips() {
         let store = AuthStore::open_in_memory().unwrap();
         let cfg = fast_config();
-        let account = store.provision("alice", "example.com", b"pw", &cfg).unwrap();
+        let account = store
+            .provision("alice", "example.com", b"pw", &cfg)
+            .unwrap();
 
         assert_eq!(store.get_signature_sealed(account.id).unwrap(), None);
 
-        store.set_signature_sealed(account.id, Some(b"sealed bytes".to_vec())).unwrap();
-        assert_eq!(store.get_signature_sealed(account.id).unwrap(), Some(b"sealed bytes".to_vec()));
+        store
+            .set_signature_sealed(account.id, Some(b"sealed bytes".to_vec()))
+            .unwrap();
+        assert_eq!(
+            store.get_signature_sealed(account.id).unwrap(),
+            Some(b"sealed bytes".to_vec())
+        );
 
         store.set_signature_sealed(account.id, None).unwrap();
         assert_eq!(store.get_signature_sealed(account.id).unwrap(), None);
@@ -409,7 +431,9 @@ mod tests {
     fn delete_account_removes_it() {
         let store = AuthStore::open_in_memory().unwrap();
         let cfg = fast_config();
-        let account = store.provision("alice", "example.com", b"pw", &cfg).unwrap();
+        let account = store
+            .provision("alice", "example.com", b"pw", &cfg)
+            .unwrap();
 
         store.delete_account(account.id).unwrap();
         assert!(store.find_by_id(account.id).unwrap().is_none());

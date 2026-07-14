@@ -25,6 +25,7 @@ use store::{BlobStore, MetadataStore};
 /// DATA cap) is config-driven; these are per-line floors underneath it.
 const MAX_COMMAND_LINE: usize = 4096;
 const MAX_DATA_LINE: usize = 65536;
+const MAX_RECIPIENTS: usize = 100;
 
 pub struct Deps {
     pub hostname: String,
@@ -194,18 +195,22 @@ where
             "RCPT" => {
                 if envelope.mail_from.is_none() {
                     let _ = write_reply(reader, 503, "Bad sequence of commands").await;
+                } else if envelope.rcpt_to.len() >= MAX_RECIPIENTS {
+                    let _ = write_reply(reader, 452, "Too many recipients").await;
                 } else {
                     match parse_addr_param(rest, "TO:") {
-                        Some(addr) => match resolve_recipient(deps, &addr) {
-                            Some(resolved) => {
-                                envelope.rcpt_to.push(resolved);
-                                let _ = write_reply(reader, 250, "OK").await;
+                        Some(addr) if common::input::valid_email_address(&addr) => {
+                            match resolve_recipient(deps, &addr) {
+                                Some(resolved) => {
+                                    envelope.rcpt_to.push(resolved);
+                                    let _ = write_reply(reader, 250, "OK").await;
+                                }
+                                None => {
+                                    let _ = write_reply(reader, 550, "No such user here").await;
+                                }
                             }
-                            None => {
-                                let _ = write_reply(reader, 550, "No such user here").await;
-                            }
-                        },
-                        None => {
+                        }
+                        _ => {
                             let _ = write_reply(reader, 501, "Syntax error in parameters").await;
                         }
                     }
@@ -255,7 +260,8 @@ where
                                 tracing::warn!(%remote_ip, reason = %reason, "rejecting message: scanner verdict");
                                 let _ = deps.audit.log("smtp.scan_reject", &reason);
                                 let _ =
-                                    write_reply(reader, 550, "Message rejected by content policy").await;
+                                    write_reply(reader, 550, "Message rejected by content policy")
+                                        .await;
                                 envelope.reset();
                                 continue;
                             }
@@ -312,6 +318,10 @@ where
                     }
                     Err(DataError::TooLarge) => {
                         let _ = write_reply(reader, 552, "Message size exceeds fixed limit").await;
+                        // read_data stops at the limit rather than buffering the
+                        // rest. Close so remaining DATA bytes can never be
+                        // interpreted as SMTP commands.
+                        return LoopOutcome::Closed;
                     }
                     Err(DataError::Io) => return LoopOutcome::Closed,
                 }
@@ -576,9 +586,15 @@ mod tests {
 
     #[test]
     fn split_command_handles_verb_and_args() {
-        assert_eq!(split_command("EHLO mail.example.com"), ("EHLO", "mail.example.com"));
+        assert_eq!(
+            split_command("EHLO mail.example.com"),
+            ("EHLO", "mail.example.com")
+        );
         assert_eq!(split_command("STARTTLS"), ("STARTTLS", ""));
-        assert_eq!(split_command("MAIL FROM:<a@b.com>"), ("MAIL", "FROM:<a@b.com>"));
+        assert_eq!(
+            split_command("MAIL FROM:<a@b.com>"),
+            ("MAIL", "FROM:<a@b.com>")
+        );
     }
 
     #[test]

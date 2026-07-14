@@ -53,7 +53,12 @@ async fn real_message_lands_decrypts_on_unlock_dkim_stored() {
 
     let cfg = fast_argon2();
     let account = auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
 
     let authenticator = Arc::new(MessageAuthenticator::new_system_conf().unwrap());
@@ -86,7 +91,10 @@ async fn real_message_lands_decrypts_on_unlock_dkim_stored() {
     let mut conn = BufReader::new(stream);
 
     let greeting = read_reply(&mut conn).await;
-    assert!(greeting.starts_with("220"), "unexpected greeting: {greeting}");
+    assert!(
+        greeting.starts_with("220"),
+        "unexpected greeting: {greeting}"
+    );
 
     send_line(&mut conn, "EHLO mail.sender.example.net").await;
     // Drain the multiline EHLO reply (last line has a space after the code).
@@ -163,7 +171,12 @@ async fn catch_all_delivers_to_configured_mailbox() {
 
     let cfg = fast_argon2();
     let account = auth_store
-        .provision("catchall", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "catchall",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
     admin_store
         .create_domain("example.com", Some("catchall"))
@@ -230,7 +243,11 @@ async fn catch_all_delivers_to_configured_mailbox() {
     assert!(reply.starts_with("250"), "message not accepted: {reply}");
 
     let messages = metadata.messages_for_account(account.id).unwrap();
-    assert_eq!(messages.len(), 1, "expected the message in the catch-all account");
+    assert_eq!(
+        messages.len(),
+        1,
+        "expected the message in the catch-all account"
+    );
     assert_eq!(messages[0].rcpt_to, "whatever@example.com");
 }
 
@@ -340,7 +357,10 @@ async fn oversized_message_is_rejected_early() {
     conn.write_all(big_body.as_bytes()).await.unwrap();
     conn.write_all(b"\r\n.\r\n").await.unwrap();
     let reply = read_reply(&mut conn).await;
-    assert!(reply.starts_with("552"), "oversized message not rejected: {reply}");
+    assert!(
+        reply.starts_with("552"),
+        "oversized message not rejected: {reply}"
+    );
 }
 
 #[tokio::test]
@@ -411,7 +431,10 @@ async fn starttls_upgrades_and_delivers_over_encrypted_channel() {
             break;
         }
     }
-    assert!(saw_starttls, "STARTTLS must be advertised when a cert is configured");
+    assert!(
+        saw_starttls,
+        "STARTTLS must be advertised when a cert is configured"
+    );
 
     send_line(&mut conn, "STARTTLS").await;
     let reply = read_reply(&mut conn).await;
@@ -445,18 +468,27 @@ async fn starttls_upgrades_and_delivers_over_encrypted_channel() {
 
     send_line(&mut tls_conn, "MAIL FROM:<sender@sender.example.net>").await;
     let reply = read_reply(&mut tls_conn).await;
-    assert!(reply.starts_with("250"), "MAIL FROM over TLS rejected: {reply}");
+    assert!(
+        reply.starts_with("250"),
+        "MAIL FROM over TLS rejected: {reply}"
+    );
 
     send_line(&mut tls_conn, "RCPT TO:<carol@example.com>").await;
     let reply = read_reply(&mut tls_conn).await;
-    assert!(reply.starts_with("250"), "RCPT TO over TLS rejected: {reply}");
+    assert!(
+        reply.starts_with("250"),
+        "RCPT TO over TLS rejected: {reply}"
+    );
 
     send_line(&mut tls_conn, "DATA").await;
     let _ = read_reply(&mut tls_conn).await;
     let body = "From: sender@sender.example.net\r\nTo: carol@example.com\r\nSubject: over TLS\r\n\r\nEncrypted in transit.\r\n.\r\n";
     tls_conn.write_all(body.as_bytes()).await.unwrap();
     let reply = read_reply(&mut tls_conn).await;
-    assert!(reply.starts_with("250"), "message over TLS not accepted: {reply}");
+    assert!(
+        reply.starts_with("250"),
+        "message over TLS not accepted: {reply}"
+    );
 
     let messages = metadata.messages_for_account(account.id).unwrap();
     assert_eq!(messages.len(), 1);
@@ -471,13 +503,18 @@ async fn fake_rspamd(action: &'static str) -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
             tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
                 let mut buf = vec![0u8; 65536];
                 let _ = stream.read(&mut buf).await;
                 let body = format!(r#"{{"score":20.0,"required_score":15.0,"action":"{action}"}}"#);
-                let response = format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+                let response = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.shutdown().await;
             });
@@ -493,7 +530,9 @@ async fn fake_clamd(reply: &'static str) -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
             tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
                 let mut command = [0u8; 10];
@@ -514,7 +553,9 @@ async fn fake_clamd(reply: &'static str) -> String {
                         return;
                     }
                 }
-                let _ = stream.write_all(format!("stream: {reply}\0").as_bytes()).await;
+                let _ = stream
+                    .write_all(format!("stream: {reply}\0").as_bytes())
+                    .await;
             });
         }
     });
@@ -585,11 +626,17 @@ async fn rspamd_add_header_routes_message_to_junk() {
     });
 
     let reply = deliver_one_message(deps, "alice@example.com", "spammy subject").await;
-    assert!(reply.starts_with("250"), "spam-flagged message should still be accepted: {reply}");
+    assert!(
+        reply.starts_with("250"),
+        "spam-flagged message should still be accepted: {reply}"
+    );
 
     let messages = metadata.messages_for_account(account.id).unwrap();
     assert_eq!(messages.len(), 1);
-    let junk = metadata.get_mailbox_by_role(account.id, store::ROLE_JUNK).unwrap().unwrap();
+    let junk = metadata
+        .get_mailbox_by_role(account.id, store::ROLE_JUNK)
+        .unwrap()
+        .unwrap();
     assert_eq!(messages[0].mailbox_id, junk.id);
     assert!(messages[0].keywords.contains(store::KEYWORD_JUNK));
 }
@@ -627,8 +674,14 @@ async fn rspamd_reject_gets_5xx_and_no_delivery() {
     });
 
     let reply = deliver_one_message(deps, "alice@example.com", "spam").await;
-    assert!(reply.starts_with("550"), "rejected message should get a 5xx: {reply}");
-    assert!(metadata.messages_for_account(account.id).unwrap().is_empty());
+    assert!(
+        reply.starts_with("550"),
+        "rejected message should get a 5xx: {reply}"
+    );
+    assert!(metadata
+        .messages_for_account(account.id)
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -664,8 +717,14 @@ async fn clamav_found_gets_5xx_and_no_delivery() {
     });
 
     let reply = deliver_one_message(deps, "alice@example.com", "eicar").await;
-    assert!(reply.starts_with("550"), "malware should get a 5xx: {reply}");
-    assert!(metadata.messages_for_account(account.id).unwrap().is_empty());
+    assert!(
+        reply.starts_with("550"),
+        "malware should get a 5xx: {reply}"
+    );
+    assert!(metadata
+        .messages_for_account(account.id)
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -702,12 +761,21 @@ async fn unreachable_scanner_fails_open_to_inbox() {
     });
 
     let reply = deliver_one_message(deps, "alice@example.com", "normal mail").await;
-    assert!(reply.starts_with("250"), "unreachable scanner must fail open: {reply}");
+    assert!(
+        reply.starts_with("250"),
+        "unreachable scanner must fail open: {reply}"
+    );
 
     let messages = metadata.messages_for_account(account.id).unwrap();
     assert_eq!(messages.len(), 1);
-    let inbox = metadata.get_mailbox_by_role(account.id, store::ROLE_INBOX).unwrap().unwrap();
-    assert_eq!(messages[0].mailbox_id, inbox.id, "must land in Inbox, not Junk");
+    let inbox = metadata
+        .get_mailbox_by_role(account.id, store::ROLE_INBOX)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        messages[0].mailbox_id, inbox.id,
+        "must land in Inbox, not Junk"
+    );
 
     let entries = audit.read_recent(&[7u8; 32], 10).unwrap();
     assert!(entries.iter().any(|e| e.action == "smtp.scan_unreachable"));

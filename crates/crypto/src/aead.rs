@@ -79,6 +79,9 @@ mod tests {
         let key = [5u8; 32];
         let a = aead_seal(&key, 1, b"same plaintext");
         let b = aead_seal(&key, 1, b"same plaintext");
-        assert_ne!(a, b, "identical plaintext must not produce identical ciphertext");
+        assert_ne!(
+            a, b,
+            "identical plaintext must not produce identical ciphertext"
+        );
     }
 }

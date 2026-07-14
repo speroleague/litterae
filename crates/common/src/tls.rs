@@ -19,7 +19,9 @@ pub fn load_server_config(cert_path: &Path, key_path: &Path) -> Result<Arc<Serve
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| Error::Config(format!("failed to parse TLS cert chain: {e}")))?;
     if certs.is_empty() {
-        return Err(Error::Config("tls_cert_path contains no certificates".into()));
+        return Err(Error::Config(
+            "tls_cert_path contains no certificates".into(),
+        ));
     }
 
     let key = PrivateKeyDer::from_pem_file(key_path)

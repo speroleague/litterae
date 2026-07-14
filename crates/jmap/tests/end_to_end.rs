@@ -38,7 +38,12 @@ async fn unlock_query_get_round_trips_decrypted_content() {
     let cfg = fast_argon2();
 
     let account = auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
 
     delivery::deliver(
@@ -66,7 +71,15 @@ async fn unlock_query_get_round_trips_decrypted_content() {
     )
     .unwrap();
 
-    let state = AppState::new(auth_store, blobs, metadata, Arc::new(audit::AuditStore::open_in_memory().unwrap()), Arc::new(cfg), Arc::new(queue::QueueStore::open_in_memory().unwrap()), Arc::new(common::changes::ChangeNotifier::new()));
+    let state = AppState::new(
+        auth_store,
+        blobs,
+        metadata,
+        Arc::new(audit::AuditStore::open_in_memory().unwrap()),
+        Arc::new(cfg),
+        Arc::new(queue::QueueStore::open_in_memory().unwrap()),
+        Arc::new(common::changes::ChangeNotifier::new()),
+    );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
     ));
@@ -180,7 +193,12 @@ async fn repeated_failed_unlocks_are_throttled() {
     let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
     let cfg = fast_argon2();
     auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
 
     let state = AppState::new(
@@ -214,7 +232,9 @@ async fn repeated_failed_unlocks_are_throttled() {
 
     // Immediately retrying -- even with the *correct* password -- is
     // throttled rather than checked, so the lockout can't be raced.
-    let resp = attempt(app.clone(), "correct horse battery staple").await.unwrap();
+    let resp = attempt(app.clone(), "correct horse battery staple")
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
@@ -224,7 +244,15 @@ async fn jmap_api_without_token_is_rejected() {
     let blobs = Arc::new(BlobStore::open(tmp.path()).unwrap());
     let metadata = Arc::new(MetadataStore::open_in_memory().unwrap());
     let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
-    let state = AppState::new(auth_store, blobs, metadata, Arc::new(audit::AuditStore::open_in_memory().unwrap()), Arc::new(fast_argon2()), Arc::new(queue::QueueStore::open_in_memory().unwrap()), Arc::new(common::changes::ChangeNotifier::new()));
+    let state = AppState::new(
+        auth_store,
+        blobs,
+        metadata,
+        Arc::new(audit::AuditStore::open_in_memory().unwrap()),
+        Arc::new(fast_argon2()),
+        Arc::new(queue::QueueStore::open_in_memory().unwrap()),
+        Arc::new(common::changes::ChangeNotifier::new()),
+    );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
     ));

@@ -91,15 +91,9 @@ pub fn hpke_open(
     let encapped = <Kem as KemTrait>::EncappedKey::from_bytes(&header.nonce)
         .map_err(|e| CryptoError::Hpke(format!("bad encapped key: {e:?}")))?;
 
-    let plaintext = single_shot_open::<Aead, Kdf, Kem>(
-        &OpModeR::Base,
-        &sk,
-        &encapped,
-        info,
-        ciphertext,
-        &[],
-    )
-    .map_err(|_| CryptoError::OpenFailed)?;
+    let plaintext =
+        single_shot_open::<Aead, Kdf, Kem>(&OpModeR::Base, &sk, &encapped, info, ciphertext, &[])
+            .map_err(|_| CryptoError::OpenFailed)?;
     Ok(Zeroizing::new(plaintext))
 }
 

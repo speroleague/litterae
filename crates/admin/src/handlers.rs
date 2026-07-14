@@ -25,7 +25,14 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 
 fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i64, StatusCode> {
     let token = bearer_token(headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    state.sessions.admin_id(token).ok_or(StatusCode::UNAUTHORIZED)
+    let admin_id = state
+        .sessions
+        .admin_id(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if state.sessions.password_change_required(token) != Some(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(admin_id)
 }
 
 #[derive(Serialize)]
@@ -82,10 +89,23 @@ pub async fn login(
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
-    let outcome = state
-        .admin_store
-        .verify_login(&req.username, req.password.as_bytes(), &state.argon2_config)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let permit = state
+        .auth_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let store = state.admin_store.clone();
+    let config = state.argon2_config.clone();
+    let username = req.username.clone();
+    let password = req.password;
+    let outcome = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        store.verify_login(&username, password.as_bytes(), &config)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some((admin, wrap_key)) = outcome else {
         state.login_throttle.record_failure(&req.username);
         let _ = state.audit_store.log("auth.login_failed", &req.username);
@@ -94,7 +114,9 @@ pub async fn login(
     };
     state.login_throttle.record_success(&req.username);
 
-    let token = state.sessions.create(admin.id, wrap_key);
+    let token = state
+        .sessions
+        .create(admin.id, wrap_key, admin.must_change_password);
     let _ = state.audit_store.log("auth.login", &admin.username);
     Ok(Json(LoginResponse {
         token,
@@ -105,7 +127,9 @@ pub async fn login(
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> StatusCode {
     if let Some(token) = bearer_token(&headers) {
         if let Some(admin_id) = state.sessions.admin_id(token) {
-            let _ = state.audit_store.log("session.close", &admin_id.to_string());
+            let _ = state
+                .audit_store
+                .log("session.close", &admin_id.to_string());
         }
         state.sessions.remove(token);
     }
@@ -125,7 +149,14 @@ pub async fn change_password(
     headers: HeaderMap,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let admin_id = require_admin(&state, &headers)?;
+    if req.new_password.len() < 12 {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let admin_id = state
+        .sessions
+        .admin_id(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Re-verify the current password rather than trusting the session
     // alone -- a stolen bearer token shouldn't be enough to permanently
@@ -135,20 +166,41 @@ pub async fn change_password(
         .username_for_id(admin_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let (_, old_wrap_key) = state
-        .admin_store
-        .verify_login(&username, req.current_password.as_bytes(), &state.argon2_config)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    let new_wrap_key = state
-        .admin_store
-        .change_password(admin_id, req.new_password.as_bytes(), &state.argon2_config)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let permit = state
+        .auth_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let store = state.admin_store.clone();
+    let config = state.argon2_config.clone();
+    let username_for_change = username.clone();
+    let current_password = req.current_password;
+    let new_password = req.new_password;
+    let keys = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let Some((_, old_wrap_key)) =
+            store.verify_login(&username_for_change, current_password.as_bytes(), &config)?
+        else {
+            return Ok::<_, common::Error>(None);
+        };
+        let new_wrap_key = store.change_password(admin_id, new_password.as_bytes(), &config)?;
+        Ok(Some((old_wrap_key, new_wrap_key)))
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (old_wrap_key, new_wrap_key) = keys.ok_or(StatusCode::UNAUTHORIZED)?;
     state
         .audit_store
         .rewrap_audit_key(&old_wrap_key, &new_wrap_key)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !state
+        .sessions
+        .complete_password_change(token, admin_id, new_wrap_key)
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let _ = state.audit_store.log("admin.password_change", &username);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -185,7 +237,9 @@ pub async fn list_domains(
         .admin_store
         .list_domains()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(domains.into_iter().map(DomainResponse::from).collect()))
+    Ok(Json(
+        domains.into_iter().map(DomainResponse::from).collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -201,6 +255,14 @@ pub async fn create_domain(
     Json(req): Json<CreateDomainRequest>,
 ) -> Result<Json<DomainResponse>, StatusCode> {
     require_admin(&state, &headers)?;
+    if !common::input::valid_domain_name(&req.name)
+        || req
+            .catch_all_local_part
+            .as_deref()
+            .is_some_and(|value| !common::input::valid_local_part(value))
+    {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     let domain = state
         .admin_store
         .create_domain(&req.name, req.catch_all_local_part.as_deref())
@@ -222,11 +284,20 @@ pub async fn update_domain(
     Json(req): Json<SetCatchAllRequest>,
 ) -> Result<StatusCode, StatusCode> {
     require_admin(&state, &headers)?;
+    if req
+        .catch_all_local_part
+        .as_deref()
+        .is_some_and(|value| !common::input::valid_local_part(value))
+    {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     state
         .admin_store
         .set_catch_all(id, req.catch_all_local_part.as_deref())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let _ = state.audit_store.log("admin.domain_update", &id.to_string());
+    let _ = state
+        .audit_store
+        .log("admin.domain_update", &id.to_string());
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -240,7 +311,9 @@ pub async fn delete_domain(
         .admin_store
         .delete_domain(id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let _ = state.audit_store.log("admin.domain_delete", &id.to_string());
+    let _ = state
+        .audit_store
+        .log("admin.domain_delete", &id.to_string());
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -385,6 +458,12 @@ pub async fn create_account(
     Json(req): Json<CreateAccountRequest>,
 ) -> Result<Json<AccountResponse>, StatusCode> {
     require_admin(&state, &headers)?;
+    if !common::input::valid_local_part(&req.local_part)
+        || !common::input::valid_domain_name(&req.domain)
+        || req.password.len() < 12
+    {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
 
     // Only allow provisioning on domains the admin has explicitly added --
     // the guided path shouldn't let you typo your way into hosting a
@@ -400,9 +479,16 @@ pub async fn create_account(
 
     let account = state
         .auth_store
-        .provision(&req.local_part, &req.domain, req.password.as_bytes(), &state.argon2_config)
+        .provision(
+            &req.local_part,
+            &req.domain,
+            req.password.as_bytes(),
+            &state.argon2_config,
+        )
         .map_err(|_| StatusCode::CONFLICT)?;
-    let _ = state.audit_store.log("admin.account_create", &account.address());
+    let _ = state
+        .audit_store
+        .log("admin.account_create", &account.address());
     Ok(Json(AccountResponse {
         id: account.id,
         address: account.address(),
@@ -420,7 +506,9 @@ pub async fn delete_account(
         .auth_store
         .delete_account(id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let _ = state.audit_store.log("admin.account_delete", &id.to_string());
+    let _ = state
+        .audit_store
+        .log("admin.account_delete", &id.to_string());
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -506,10 +594,16 @@ pub async fn audit_log(
     headers: HeaderMap,
 ) -> Result<Json<Vec<AuditEntryResponse>>, StatusCode> {
     let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    state.sessions.admin_id(token).ok_or(StatusCode::UNAUTHORIZED)?;
+    state
+        .sessions
+        .admin_id(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
     // The session's wrap key -- not just proof of who's logged in -- is
     // what makes entry detail readable; a valid token alone isn't enough.
-    let wrap_key = state.sessions.wrap_key(token).ok_or(StatusCode::UNAUTHORIZED)?;
+    let wrap_key = state
+        .sessions
+        .wrap_key(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
 
     let entries = state
         .audit_store

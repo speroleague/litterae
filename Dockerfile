@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcap2-bin \
     gettext-base \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --create-home --home-dir /var/lib/litterae --shell /usr/sbin/nologin litterae
+    && useradd --system --uid 10001 --create-home --home-dir /var/lib/litterae --shell /usr/sbin/nologin litterae
 
 COPY --from=builder /build/target/release/litterae /usr/local/bin/litterae
 COPY docker/entrypoint.sh /entrypoint.sh

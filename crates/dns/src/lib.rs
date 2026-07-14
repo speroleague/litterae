@@ -142,7 +142,9 @@ mod tests {
         let resolver = Resolver::new().unwrap();
         let records = resolver.resolve_mx("gmail.com").await.unwrap();
         assert!(!records.is_empty());
-        assert!(records.windows(2).all(|w| w[0].preference <= w[1].preference));
+        assert!(records
+            .windows(2)
+            .all(|w| w[0].preference <= w[1].preference));
     }
 
     #[tokio::test]

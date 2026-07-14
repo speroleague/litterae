@@ -16,9 +16,9 @@ use crate::email;
 use crate::types::{
     error_response, EmailCreateRequest, EmailGetArgs, EmailGetResult, EmailObject, EmailQueryArgs,
     EmailQueryResult, EmailSetArgs, EmailSetResult, EmailSubmissionSetArgs,
-    EmailSubmissionSetResult, IdentityGetArgs, IdentityGetResult, IdentityObject,
-    IdentitySetArgs, IdentitySetResult, MailboxGetArgs, MailboxGetResult, MailboxObject,
-    MethodCall, MethodResponse, ThreadGetArgs, ThreadGetResult, ThreadObject,
+    EmailSubmissionSetResult, IdentityGetArgs, IdentityGetResult, IdentityObject, IdentitySetArgs,
+    IdentitySetResult, MailboxGetArgs, MailboxGetResult, MailboxObject, MethodCall, MethodResponse,
+    ThreadGetArgs, ThreadGetResult, ThreadObject,
 };
 
 pub struct AccountContext<'a> {
@@ -59,7 +59,11 @@ pub fn dispatch(call: MethodCall, ctx: &AccountContext) -> MethodResponse {
         "Thread/get" => thread_get(args, &call_id, ctx),
         "Identity/get" => identity_get(args, &call_id, ctx),
         "Identity/set" => identity_set(args, &call_id, ctx),
-        other => error_response("unknownMethod", &format!("no such method: {other}"), &call_id),
+        other => error_response(
+            "unknownMethod",
+            &format!("no such method: {other}"),
+            &call_id,
+        ),
     }
 }
 
@@ -258,24 +262,31 @@ fn email_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
                 );
             }
             Err(e) => {
-                result
-                    .not_created
-                    .insert(key.clone(), serde_json::json!({"type": "serverFail", "description": e}));
+                result.not_created.insert(
+                    key.clone(),
+                    serde_json::json!({"type": "serverFail", "description": e}),
+                );
             }
         }
     }
 
     for (id, patch) in &args.update {
         let Some(row_id) = email_row_id(id) else {
-            result.not_updated.insert(id.clone(), serde_json::json!({"type": "invalidPatch"}));
+            result
+                .not_updated
+                .insert(id.clone(), serde_json::json!({"type": "invalidPatch"}));
             continue;
         };
         let Ok(Some(existing)) = ctx.metadata.get_message(row_id) else {
-            result.not_updated.insert(id.clone(), serde_json::json!({"type": "notFound"}));
+            result
+                .not_updated
+                .insert(id.clone(), serde_json::json!({"type": "notFound"}));
             continue;
         };
         if existing.account_id != account_id {
-            result.not_updated.insert(id.clone(), serde_json::json!({"type": "notFound"}));
+            result
+                .not_updated
+                .insert(id.clone(), serde_json::json!({"type": "notFound"}));
             continue;
         }
 
@@ -326,7 +337,10 @@ fn email_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
             .metadata
             .update_message(row_id, new_mailbox_id, keywords_str.as_deref())
         {
-            result.not_updated.insert(id.clone(), serde_json::json!({"type": "serverFail", "description": e.to_string()}));
+            result.not_updated.insert(
+                id.clone(),
+                serde_json::json!({"type": "serverFail", "description": e.to_string()}),
+            );
             continue;
         }
         result.updated.insert(id.clone(), serde_json::json!(null));
@@ -334,35 +348,49 @@ fn email_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
 
     for id in &args.destroy {
         let Some(row_id) = email_row_id(id) else {
-            result.not_destroyed.insert(id.clone(), serde_json::json!({"type": "notFound"}));
+            result
+                .not_destroyed
+                .insert(id.clone(), serde_json::json!({"type": "notFound"}));
             continue;
         };
         let Ok(Some(existing)) = ctx.metadata.get_message(row_id) else {
-            result.not_destroyed.insert(id.clone(), serde_json::json!({"type": "notFound"}));
+            result
+                .not_destroyed
+                .insert(id.clone(), serde_json::json!({"type": "notFound"}));
             continue;
         };
         if existing.account_id != account_id {
-            result.not_destroyed.insert(id.clone(), serde_json::json!({"type": "notFound"}));
+            result
+                .not_destroyed
+                .insert(id.clone(), serde_json::json!({"type": "notFound"}));
             continue;
         }
 
         let trash = match ctx.metadata.ensure_mailbox(account_id, ROLE_TRASH) {
             Ok(mb) => mb,
             Err(e) => {
-                result.not_destroyed.insert(id.clone(), serde_json::json!({"type": "serverFail", "description": e.to_string()}));
+                result.not_destroyed.insert(
+                    id.clone(),
+                    serde_json::json!({"type": "serverFail", "description": e.to_string()}),
+                );
                 continue;
             }
         };
 
         let outcome = if existing.mailbox_id == trash.id {
-            ctx.metadata.delete_message(row_id)
+            ctx.metadata
+                .delete_message(row_id)
+                .and_then(|()| ctx.blobs.remove(&existing.blob_hash))
         } else {
             ctx.metadata.update_message(row_id, Some(trash.id), None)
         };
         match outcome {
             Ok(()) => result.destroyed.push(id.clone()),
             Err(e) => {
-                result.not_destroyed.insert(id.clone(), serde_json::json!({"type": "serverFail", "description": e.to_string()}));
+                result.not_destroyed.insert(
+                    id.clone(),
+                    serde_json::json!({"type": "serverFail", "description": e.to_string()}),
+                );
             }
         }
     }
@@ -397,6 +425,25 @@ fn create_draft(
     account_id: i64,
     req: &EmailCreateRequest,
 ) -> Result<(i64, i64), String> {
+    if req
+        .subject
+        .as_deref()
+        .is_some_and(|value| !common::input::valid_header_value(value))
+    {
+        return Err("subject contains prohibited control characters".to_string());
+    }
+    for address in req.to.iter().chain(req.cc.iter()).chain(req.bcc.iter()) {
+        if !common::input::valid_email_address(&address.email) {
+            return Err(format!("invalid email address: {}", address.email));
+        }
+        if address
+            .name
+            .as_deref()
+            .is_some_and(|value| !common::input::valid_header_value(value))
+        {
+            return Err("display name contains prohibited control characters".to_string());
+        }
+    }
     let now = now_unix();
 
     // A reply reuses the parent's thread directly and carries its
@@ -427,7 +474,10 @@ fn create_draft(
 
     let subject_hash = req.subject.as_deref().map(|s| {
         let normalized = normalize_subject(s);
-        hex::encode(Sha256::digest(normalized.as_bytes()))
+        let mut hash = Sha256::new();
+        hash.update(ctx.account_pub);
+        hash.update(normalized.as_bytes());
+        hex::encode(hash.finalize())
     });
 
     let thread_id = match thread_id {
@@ -451,10 +501,11 @@ fn create_draft(
         in_reply_to_header.as_deref(),
         references_header.as_deref(),
         now,
-    );
+    )?;
 
-    let (blob_hash, dek_wrap) = delivery::seal_for_account(ctx.blobs, ctx.account_pub, ctx.key_id, &raw.bytes)
-        .map_err(|e| e.to_string())?;
+    let (blob_hash, dek_wrap) =
+        delivery::seal_for_account(ctx.blobs, ctx.account_pub, ctx.key_id, &raw.bytes)
+            .map_err(|e| e.to_string())?;
     let drafts = ctx
         .metadata
         .ensure_mailbox(account_id, ROLE_DRAFTS)
@@ -503,7 +554,11 @@ fn create_draft(
 /// `Email/set create`), then moves it into Sent and clears `$draft`. The
 /// server always enforces `mailFrom` = the session's own address --
 /// there's no client-supplied envelope-from to validate, only recipients.
-fn email_submission_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> MethodResponse {
+fn email_submission_set(
+    args: serde_json::Value,
+    call_id: &str,
+    ctx: &AccountContext,
+) -> MethodResponse {
     let args: EmailSubmissionSetArgs = match serde_json::from_value(args) {
         Ok(a) => a,
         Err(e) => return error_response("invalidArguments", &e.to_string(), call_id),
@@ -529,9 +584,10 @@ fn email_submission_set(args: serde_json::Value, call_id: &str, ctx: &AccountCon
                 ctx.notifier.notify(account_id);
             }
             Err(e) => {
-                result
-                    .not_created
-                    .insert(key.clone(), serde_json::json!({"type": "serverFail", "description": e}));
+                result.not_created.insert(
+                    key.clone(),
+                    serde_json::json!({"type": "serverFail", "description": e}),
+                );
             }
         }
     }
@@ -561,11 +617,35 @@ fn submit_email(
     if req.envelope.rcpt_to.is_empty() {
         return Err("envelope has no recipients".to_string());
     }
+    if req.envelope.rcpt_to.len() > 100 {
+        return Err("envelope has too many recipients".to_string());
+    }
+    if let Some(invalid) = req
+        .envelope
+        .rcpt_to
+        .iter()
+        .find(|address| !common::input::valid_email_address(&address.email))
+    {
+        return Err(format!("invalid envelope recipient: {}", invalid.email));
+    }
 
-    let raw = delivery::open_message(ctx.blobs, &existing, ctx.account_priv).map_err(|e| e.to_string())?;
-    let domain = ctx.address.rsplit_once('@').map(|(_, d)| d).unwrap_or(ctx.address);
-    let domain_key = ctx.queue.ensure_dkim_key(domain).map_err(|e| e.to_string())?;
-    let recipients: Vec<&str> = req.envelope.rcpt_to.iter().map(|a| a.email.as_str()).collect();
+    let raw = delivery::open_message(ctx.blobs, &existing, ctx.account_priv)
+        .map_err(|e| e.to_string())?;
+    let domain = ctx
+        .address
+        .rsplit_once('@')
+        .map(|(_, d)| d)
+        .unwrap_or(ctx.address);
+    let domain_key = ctx
+        .queue
+        .ensure_dkim_key(domain)
+        .map_err(|e| e.to_string())?;
+    let recipients: Vec<&str> = req
+        .envelope
+        .rcpt_to
+        .iter()
+        .map(|a| a.email.as_str())
+        .collect();
 
     queue::enqueue(
         ctx.queue,
@@ -721,7 +801,9 @@ fn identity_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) ->
 
     for (id, patch) in &args.update {
         if *id != this_id {
-            result.not_updated.insert(id.clone(), serde_json::json!({"type": "notFound"}));
+            result
+                .not_updated
+                .insert(id.clone(), serde_json::json!({"type": "notFound"}));
             continue;
         }
         let Some(text) = &patch.text_signature else {
@@ -739,9 +821,10 @@ fn identity_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) ->
                 ctx.notifier.notify(account_id);
             }
             Err(e) => {
-                result
-                    .not_updated
-                    .insert(id.clone(), serde_json::json!({"type": "serverFail", "description": e.to_string()}));
+                result.not_updated.insert(
+                    id.clone(),
+                    serde_json::json!({"type": "serverFail", "description": e.to_string()}),
+                );
             }
         }
     }

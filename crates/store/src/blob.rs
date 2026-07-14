@@ -29,7 +29,7 @@ impl BlobStore {
     /// metadata write was committed).
     pub fn write(&self, bytes: &[u8]) -> Result<String> {
         let hash = Self::hash_hex(bytes);
-        let final_path = self.path_for(&hash);
+        let final_path = self.path_for(&hash)?;
         if final_path.exists() {
             return Ok(hash);
         }
@@ -55,7 +55,7 @@ impl BlobStore {
     /// Reads a blob by hash, verifying content integrity against the address
     /// before returning it.
     pub fn read(&self, hash: &str) -> Result<Vec<u8>> {
-        let bytes = fs::read(self.path_for(hash))?;
+        let bytes = fs::read(self.path_for(hash)?)?;
         let actual = Self::hash_hex(&bytes);
         if actual != hash {
             return Err(Error::Storage(format!(
@@ -66,7 +66,18 @@ impl BlobStore {
     }
 
     pub fn exists(&self, hash: &str) -> bool {
-        self.path_for(hash).exists()
+        self.path_for(hash).is_ok_and(|path| path.exists())
+    }
+
+    /// Removes a blob after its final metadata/queue reference is gone.
+    /// Missing files are treated as already removed.
+    pub fn remove(&self, hash: &str) -> Result<()> {
+        let path = self.path_for(hash)?;
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn hash_hex(bytes: &[u8]) -> String {
@@ -77,9 +88,12 @@ impl BlobStore {
 
     /// Maildir-style sharding: first byte of the hash as a subdirectory, so
     /// no single directory accumulates unbounded entries.
-    fn path_for(&self, hash: &str) -> PathBuf {
-        let (shard, rest) = hash.split_at(2.min(hash.len()));
-        self.root.join(shard).join(rest)
+    fn path_for(&self, hash: &str) -> Result<PathBuf> {
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Storage("invalid blob hash".to_string()));
+        }
+        let (shard, rest) = hash.split_at(2);
+        Ok(self.root.join(shard).join(rest))
     }
 
     fn fsync_dir(dir: &Path) -> Result<()> {
@@ -144,12 +158,19 @@ mod tests {
         // previous crash mid-write). The tmp file must never be mistaken
         // for a valid blob, and a fresh write() must still succeed cleanly.
         let hash = BlobStore::hash_hex(b"payload");
-        let final_path = store.path_for(&hash);
+        let final_path = store.path_for(&hash).unwrap();
         let dir = final_path.parent().unwrap();
         fs::create_dir_all(dir).unwrap();
-        fs::write(dir.join(format!(".tmp-9999-{}", &hash[..16])), b"partial-garbage").unwrap();
+        fs::write(
+            dir.join(format!(".tmp-9999-{}", &hash[..16])),
+            b"partial-garbage",
+        )
+        .unwrap();
 
-        assert!(!store.exists(&hash), "stale tmp file must not count as a stored blob");
+        assert!(
+            !store.exists(&hash),
+            "stale tmp file must not count as a stored blob"
+        );
         let written_hash = store.write(b"payload").unwrap();
         assert_eq!(written_hash, hash);
         assert_eq!(store.read(&hash).unwrap(), b"payload");
@@ -167,5 +188,13 @@ mod tests {
         let h2 = store.write(b"race content").unwrap();
         assert_eq!(h1, h2);
         assert_eq!(store.read(&h1).unwrap(), b"race content");
+    }
+
+    #[test]
+    fn rejects_paths_that_are_not_sha256_hashes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = BlobStore::open(tmp.path()).unwrap();
+        assert!(store.read("../../etc/passwd").is_err());
+        assert!(store.remove("../../etc/passwd").is_err());
     }
 }

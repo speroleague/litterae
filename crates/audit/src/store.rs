@@ -23,8 +23,13 @@ use rusqlite::{Connection, OptionalExtension};
 use common::{Error, Result};
 use crypto::hpke_seal::{PRIVATE_KEY_LEN as HPKE_PRIV_LEN, PUBLIC_KEY_LEN as HPKE_PUB_LEN};
 use crypto::keyed_hash::{HASH_LEN, KEY_LEN as CHAIN_KEY_LEN};
-use crypto::sign::{PRIVATE_KEY_LEN as SIGN_PRIV_LEN, PUBLIC_KEY_LEN as SIGN_PUB_LEN, SIGNATURE_LEN};
-use crypto::{committing_open, committing_seal, hpke_open, hpke_seal, keyed_hash, sign, verify, HpkeKeypair, SigningKeypair};
+use crypto::sign::{
+    PRIVATE_KEY_LEN as SIGN_PRIV_LEN, PUBLIC_KEY_LEN as SIGN_PUB_LEN, SIGNATURE_LEN,
+};
+use crypto::{
+    committing_open, committing_seal, hpke_open, hpke_seal, keyed_hash, sign, verify, HpkeKeypair,
+    SigningKeypair,
+};
 
 use crate::types::AuditEntry;
 
@@ -162,8 +167,8 @@ impl AuditStore {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(storage_err)?;
-        let priv_bytes = committing_open(old_wrap_key, &wrapped)
-            .map_err(|e| Error::Crypto(e.to_string()))?;
+        let priv_bytes =
+            committing_open(old_wrap_key, &wrapped).map_err(|e| Error::Crypto(e.to_string()))?;
         let new_key_id = key_id + 1;
         let rewrapped = committing_seal(new_wrap_key, new_key_id, &priv_bytes);
         conn.execute(
@@ -221,10 +226,14 @@ impl AuditStore {
         let keys = Self::load_keys(&conn)?;
 
         let prev_hash: [u8; HASH_LEN] = conn
-            .query_row("SELECT hash FROM audit_log ORDER BY seq DESC LIMIT 1", (), |row| {
-                let hash: Vec<u8> = row.get(0)?;
-                Ok(hash)
-            })
+            .query_row(
+                "SELECT hash FROM audit_log ORDER BY seq DESC LIMIT 1",
+                (),
+                |row| {
+                    let hash: Vec<u8> = row.get(0)?;
+                    Ok(hash)
+                },
+            )
             .optional()
             .map_err(storage_err)?
             .map(|h| {
@@ -246,7 +255,14 @@ impl AuditStore {
         conn.execute(
             "INSERT INTO audit_log (at, action, commitment, prev_hash, hash, sealed_detail)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![now_unix(), action, commitment.as_slice(), prev_hash.as_slice(), hash.as_slice(), sealed_detail],
+            rusqlite::params![
+                now_unix(),
+                action,
+                commitment.as_slice(),
+                prev_hash.as_slice(),
+                hash.as_slice(),
+                sealed_detail
+            ],
         )
         .map_err(storage_err)?;
 
@@ -257,7 +273,12 @@ impl AuditStore {
         Ok(())
     }
 
-    fn sign_head_locked(conn: &Connection, keys: &AuditKeys, seq: i64, hash: &[u8; HASH_LEN]) -> Result<()> {
+    fn sign_head_locked(
+        conn: &Connection,
+        keys: &AuditKeys,
+        seq: i64,
+        hash: &[u8; HASH_LEN],
+    ) -> Result<()> {
         let sign_kp = SigningKeypair::from_private_bytes(keys.sign_priv);
         let message = head_message(seq, hash);
         let signature = sign(&sign_kp, &message);
@@ -276,9 +297,11 @@ impl AuditStore {
         let conn = self.conn.lock().expect("audit store mutex poisoned");
         let keys = Self::load_keys(&conn)?;
         let latest: Option<(i64, Vec<u8>)> = conn
-            .query_row("SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1", (), |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1",
+                (),
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()
             .map_err(storage_err)?;
         let Some((seq, hash)) = latest else {
@@ -360,7 +383,9 @@ impl AuditStore {
         priv_arr.copy_from_slice(&priv_bytes);
 
         let mut stmt = conn
-            .prepare("SELECT seq, at, action, sealed_detail FROM audit_log ORDER BY seq DESC LIMIT ?1")
+            .prepare(
+                "SELECT seq, at, action, sealed_detail FROM audit_log ORDER BY seq DESC LIMIT ?1",
+            )
             .map_err(storage_err)?;
         let rows = stmt
             .query_map((limit,), |row| {
@@ -379,7 +404,12 @@ impl AuditStore {
                 .map_err(|e| Error::Crypto(e.to_string()))?;
             let detail = String::from_utf8(detail.to_vec())
                 .map_err(|e| Error::Storage(format!("non-utf8 audit detail: {e}")))?;
-            entries.push(AuditEntry { seq, at, action, detail });
+            entries.push(AuditEntry {
+                seq,
+                at,
+                action,
+                detail,
+            });
         }
         Ok(entries)
     }
@@ -410,7 +440,11 @@ mod tests {
         store.bootstrap_keys(&[9u8; 32]).unwrap();
         store.log("test.entry", "hello").unwrap();
         let entries = store.read_recent(&wrap_key(), 10).unwrap();
-        assert_eq!(entries.len(), 1, "second bootstrap must not have rotated the key");
+        assert_eq!(
+            entries.len(),
+            1,
+            "second bootstrap must not have rotated the key"
+        );
     }
 
     #[test]
@@ -419,7 +453,9 @@ mod tests {
         store.bootstrap_keys(&wrap_key()).unwrap();
         store.log("auth.login", "admin logged in").unwrap();
         store.log("admin.domain_create", "example.com").unwrap();
-        store.log("admin.account_create", "alice@example.com").unwrap();
+        store
+            .log("admin.account_create", "alice@example.com")
+            .unwrap();
 
         assert!(store.verify_chain().unwrap());
 
@@ -449,8 +485,11 @@ mod tests {
 
         {
             let conn = store.conn.lock().unwrap();
-            conn.execute("UPDATE audit_log SET commitment = ?1 WHERE seq = 1", (vec![0u8; HASH_LEN],))
-                .unwrap();
+            conn.execute(
+                "UPDATE audit_log SET commitment = ?1 WHERE seq = 1",
+                (vec![0u8; HASH_LEN],),
+            )
+            .unwrap();
         }
         assert!(!store.verify_chain().unwrap());
     }

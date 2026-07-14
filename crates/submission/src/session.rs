@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
 
 use auth::{Account, AuthStore};
@@ -18,6 +19,7 @@ use store::BlobStore;
 
 const MAX_COMMAND_LINE: usize = 4096;
 const MAX_DATA_LINE: usize = 65536;
+const MAX_RECIPIENTS: usize = 100;
 
 pub struct Deps {
     pub hostname: String,
@@ -28,6 +30,7 @@ pub struct Deps {
     pub audit: Arc<audit::AuditStore>,
     pub login_throttle: Arc<LoginThrottle>,
     pub argon2_config: Arc<Argon2Config>,
+    pub auth_semaphore: Arc<Semaphore>,
     pub tls_acceptor: TlsAcceptor,
 }
 
@@ -77,7 +80,15 @@ pub async fn handle_starttls_connection(tcp: TcpStream, remote_ip: IpAddr, deps:
             envelope = Envelope::default();
             // RFC 3207: no new greeting after STARTTLS -- the client goes
             // straight to EHLO.
-            let _ = command_loop(&mut tls_reader, &mut envelope, remote_ip, &deps, true, false).await;
+            let _ = command_loop(
+                &mut tls_reader,
+                &mut envelope,
+                remote_ip,
+                &deps,
+                true,
+                false,
+            )
+            .await;
         }
         Err(e) => tracing::warn!(error = %e, "submission TLS handshake failed"),
     }
@@ -108,9 +119,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     if greet
-        && write_reply(reader, 220, &format!("{} ESMTP Litterae Submission", deps.hostname))
-            .await
-            .is_err()
+        && write_reply(
+            reader,
+            220,
+            &format!("{} ESMTP Litterae Submission", deps.hostname),
+        )
+        .await
+        .is_err()
     {
         return LoopOutcome::Closed;
     }
@@ -208,7 +223,10 @@ where
                     continue;
                 }
                 match parse_addr_param(rest, "TO:") {
-                    Some(addr) if addr.contains('@') => {
+                    Some(_) if envelope.rcpt_to.len() >= MAX_RECIPIENTS => {
+                        let _ = write_reply(reader, 452, "Too many recipients").await;
+                    }
+                    Some(addr) if common::input::valid_email_address(&addr) => {
                         envelope.rcpt_to.push(addr);
                         let _ = write_reply(reader, 250, "OK").await;
                     }
@@ -244,6 +262,7 @@ where
                     }
                     Err(DataError::TooLarge) => {
                         let _ = write_reply(reader, 552, "Message size exceeds fixed limit").await;
+                        return LoopOutcome::Closed;
                     }
                     Err(DataError::Io) => return LoopOutcome::Closed,
                 }
@@ -291,7 +310,9 @@ where
             Ok(true) => {}
             _ => return Err(()),
         }
-        String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']).to_string()
+        String::from_utf8_lossy(&line)
+            .trim_end_matches(['\r', '\n'])
+            .to_string()
     } else {
         initial.to_string()
     };
@@ -317,10 +338,23 @@ where
         tracing::warn!(event = "auth_failure", remote_ip = %remote_ip, authcid, "submission auth failed: no such account");
         return Ok(None);
     };
-    match deps
-        .auth_store
-        .unlock(&account, password.as_bytes(), &deps.argon2_config)
-    {
+    let permit = deps
+        .auth_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ())?;
+    let auth_store = deps.auth_store.clone();
+    let config = deps.argon2_config.clone();
+    let account_for_unlock = account.clone();
+    let password = password.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        auth_store.unlock(&account_for_unlock, password.as_bytes(), &config)
+    })
+    .await
+    .map_err(|_| ())?;
+    match result {
         Ok(_unlocked) => {
             deps.login_throttle.record_success(&authcid);
             let _ = deps.audit.log("auth.submission", &authcid);
@@ -491,5 +525,12 @@ mod tests {
             parse_addr_param("FROM:<alice@example.com>", "FROM:"),
             Some("alice@example.com".to_string())
         );
+    }
+
+    #[test]
+    fn rejects_control_characters_in_addresses() {
+        assert!(!common::input::valid_email_address(
+            "victim@example.com\r\nRSET"
+        ));
     }
 }

@@ -20,7 +20,19 @@
 # unauthenticated door onto the admin origin. Reach it via
 # `docker compose exec rspamd rspamc` or a direct port-forward instead.
 
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
 {$MAIL_HOSTNAME} {
+	import security_headers
 	handle /auth/* {
 		reverse_proxy litterae:8620
 	}
@@ -38,6 +50,7 @@
 }
 
 {$ADMIN_HOSTNAME} {
+	import security_headers
 	handle /admin/* {
 		reverse_proxy litterae:8621
 	}

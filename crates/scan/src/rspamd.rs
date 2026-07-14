@@ -65,7 +65,9 @@ struct RawResponse {
 
 impl RspamdClient {
     pub fn new(endpoint: &str) -> Self {
-        Self { endpoint: Endpoint::parse(endpoint) }
+        Self {
+            endpoint: Endpoint::parse(endpoint),
+        }
     }
 
     pub async fn check(&self, req: &CheckRequest<'_>) -> common::Result<RspamdVerdict> {
@@ -83,11 +85,17 @@ impl RspamdClient {
         }
         head.push_str("\r\n");
 
-        conn.write_all(head.as_bytes()).await.map_err(common::Error::Io)?;
-        conn.write_all(req.raw_message).await.map_err(common::Error::Io)?;
+        conn.write_all(head.as_bytes())
+            .await
+            .map_err(common::Error::Io)?;
+        conn.write_all(req.raw_message)
+            .await
+            .map_err(common::Error::Io)?;
 
         let mut response = Vec::new();
-        conn.read_to_end(&mut response).await.map_err(common::Error::Io)?;
+        conn.read_to_end(&mut response)
+            .await
+            .map_err(common::Error::Io)?;
         parse_response(&response)
     }
 }
@@ -97,7 +105,9 @@ fn parse_response(response: &[u8]) -> common::Result<RspamdVerdict> {
     let split_at = response
         .windows(separator.len())
         .position(|w| w == separator)
-        .ok_or_else(|| common::Error::Network("malformed rspamd response: no header/body separator".into()))?;
+        .ok_or_else(|| {
+            common::Error::Network("malformed rspamd response: no header/body separator".into())
+        })?;
     let body = &response[split_at + separator.len()..];
 
     let raw: RawResponse = serde_json::from_slice(body)
@@ -118,7 +128,10 @@ mod tests {
     fn parses_known_actions() {
         assert_eq!(RspamdAction::parse("no action"), RspamdAction::NoAction);
         assert_eq!(RspamdAction::parse("add header"), RspamdAction::AddHeader);
-        assert_eq!(RspamdAction::parse("rewrite subject"), RspamdAction::RewriteSubject);
+        assert_eq!(
+            RspamdAction::parse("rewrite subject"),
+            RspamdAction::RewriteSubject
+        );
         assert_eq!(RspamdAction::parse("soft reject"), RspamdAction::SoftReject);
         assert_eq!(RspamdAction::parse("reject"), RspamdAction::Reject);
         assert_eq!(RspamdAction::parse("greylist"), RspamdAction::Greylist);

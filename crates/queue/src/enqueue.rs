@@ -8,14 +8,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use store::BlobStore;
 
-use common::Result;
+use common::{Error, Result};
 
 use crate::backoff::MAX_LIFETIME_SECS;
 use crate::dkim::DomainKey;
 use crate::schema::{storage_err, QueueStore};
 use crate::types::NewOutbound;
 
-pub fn enqueue(queue: &QueueStore, blobs: &BlobStore, domain_key: &DomainKey, new: &NewOutbound) -> Result<i64> {
+pub fn enqueue(
+    queue: &QueueStore,
+    blobs: &BlobStore,
+    domain_key: &DomainKey,
+    new: &NewOutbound,
+) -> Result<i64> {
+    if (!new.envelope_from.is_empty() && !common::input::valid_email_address(new.envelope_from))
+        || new.recipients.is_empty()
+        || new.recipients.len() > 100
+        || new
+            .recipients
+            .iter()
+            .any(|recipient| !common::input::valid_email_address(recipient))
+    {
+        return Err(Error::Config("invalid outbound envelope".to_string()));
+    }
     let dkim_header = domain_key.sign(new.raw_message)?;
     let mut signed = dkim_header.into_bytes();
     signed.extend_from_slice(new.raw_message);
@@ -44,7 +59,11 @@ pub fn enqueue(queue: &QueueStore, blobs: &BlobStore, domain_key: &DomainKey, ne
     let outbound_id = conn.last_insert_rowid();
 
     for rcpt in new.recipients {
-        let domain = rcpt.rsplit_once('@').map(|(_, d)| d).unwrap_or(rcpt);
+        let domain = rcpt
+            .rsplit_once('@')
+            .map(|(_, d)| d)
+            .unwrap_or(rcpt)
+            .to_ascii_lowercase();
         conn.execute(
             "INSERT INTO outbound_rcpt (outbound_id, rcpt_to, domain, next_attempt_at)
              VALUES (?1, ?2, ?3, ?4)",
@@ -89,17 +108,45 @@ mod tests {
 
         let conn = queue.conn.lock().unwrap();
         let rcpt_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM outbound_rcpt WHERE outbound_id = ?1", (id,), |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM outbound_rcpt WHERE outbound_id = ?1",
+                (id,),
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(rcpt_count, 2);
 
         let blob_hash: String = conn
-            .query_row("SELECT message_blob FROM outbound WHERE id = ?1", (id,), |r| r.get(0))
+            .query_row(
+                "SELECT message_blob FROM outbound WHERE id = ?1",
+                (id,),
+                |r| r.get(0),
+            )
             .unwrap();
         drop(conn);
         let stored = blobs.read(&blob_hash).unwrap();
         let stored_text = String::from_utf8(stored).unwrap();
         assert!(stored_text.starts_with("DKIM-Signature:"));
         assert!(stored_text.contains("Subject: hi"));
+    }
+
+    #[test]
+    fn rejects_smtp_command_injection_in_recipient() {
+        let queue = QueueStore::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::open(tmp.path()).unwrap();
+        let key = queue.ensure_dkim_key("example.com").unwrap();
+        let malicious = "victim@example.net>\r\nRSET\r\nMAIL FROM:<spoof@example.org";
+        let new = NewOutbound {
+            account_id: 1,
+            envelope_from: "alice@example.com",
+            raw_message: b"From: alice@example.com\r\n\r\nbody",
+            recipients: &[malicious],
+            is_dsn: false,
+            dsn_envid: None,
+            dsn_ret: None,
+        };
+
+        assert!(enqueue(&queue, &blobs, &key, &new).is_err());
     }
 }

@@ -119,7 +119,15 @@ async fn flag_move_delete_search_and_threads() {
         1_700_000_200,
     );
 
-    let state = AppState::new(auth_store, blobs, metadata.clone(), Arc::new(audit::AuditStore::open_in_memory().unwrap()), Arc::new(cfg), Arc::new(queue::QueueStore::open_in_memory().unwrap()), Arc::new(common::changes::ChangeNotifier::new()));
+    let state = AppState::new(
+        auth_store,
+        blobs,
+        metadata.clone(),
+        Arc::new(audit::AuditStore::open_in_memory().unwrap()),
+        Arc::new(cfg),
+        Arc::new(queue::QueueStore::open_in_memory().unwrap()),
+        Arc::new(common::changes::ChangeNotifier::new()),
+    );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
     ));
@@ -141,7 +149,13 @@ async fn flag_move_delete_search_and_threads() {
 
     // --- Structured filter (inMailbox) works before any search has run,
     // i.e. with a cold FTS index. ---
-    let mailbox_result = call(&app, &token, "Mailbox/get", serde_json::json!({"accountId": account_id})).await;
+    let mailbox_result = call(
+        &app,
+        &token,
+        "Mailbox/get",
+        serde_json::json!({"accountId": account_id}),
+    )
+    .await;
     let mailboxes = mailbox_result["list"].as_array().unwrap();
     assert_eq!(mailboxes.len(), 6, "expected the 6 system mailboxes");
     let inbox = mailboxes.iter().find(|m| m["role"] == "inbox").unwrap();
@@ -163,14 +177,33 @@ async fn flag_move_delete_search_and_threads() {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
-    assert_eq!(ids.len(), 3, "cold-index structured filter should still see all 3 messages");
+    assert_eq!(
+        ids.len(),
+        3,
+        "cold-index structured filter should still see all 3 messages"
+    );
 
     // --- Thread/get: the reply joined the original's thread. ---
-    let get_result = call(&app, &token, "Email/get", serde_json::json!({"accountId": account_id, "ids": ids})).await;
+    let get_result = call(
+        &app,
+        &token,
+        "Email/get",
+        serde_json::json!({"accountId": account_id, "ids": ids}),
+    )
+    .await;
     let emails = get_result["list"].as_array().unwrap();
-    let pizza = emails.iter().find(|e| e["subject"] == "Pizza night").unwrap();
-    let pizza_reply = emails.iter().find(|e| e["subject"] == "Re: Pizza night").unwrap();
-    let invoice = emails.iter().find(|e| e["subject"] == "Invoice #42").unwrap();
+    let pizza = emails
+        .iter()
+        .find(|e| e["subject"] == "Pizza night")
+        .unwrap();
+    let pizza_reply = emails
+        .iter()
+        .find(|e| e["subject"] == "Re: Pizza night")
+        .unwrap();
+    let invoice = emails
+        .iter()
+        .find(|e| e["subject"] == "Invoice #42")
+        .unwrap();
     assert_eq!(pizza["threadId"], pizza_reply["threadId"]);
     assert_ne!(pizza["threadId"], invoice["threadId"]);
 
@@ -196,7 +229,10 @@ async fn flag_move_delete_search_and_threads() {
         }),
     )
     .await;
-    assert!(set_result["updated"].get(&invoice_id).is_some(), "{set_result:?}");
+    assert!(
+        set_result["updated"].get(&invoice_id).is_some(),
+        "{set_result:?}"
+    );
 
     let flagged_result = call(
         &app,
@@ -320,7 +356,9 @@ async fn unread_filter_spans_every_mailbox_and_pagination_reports_a_stable_total
     let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
     let cfg = fast_argon2();
 
-    let account = auth_store.provision("alice", "example.com", b"password123", &cfg).unwrap();
+    let account = auth_store
+        .provision("alice", "example.com", b"password123", &cfg)
+        .unwrap();
     let recipient_account = RecipientAccount {
         id: account.id,
         account_pub: account.account_pub,

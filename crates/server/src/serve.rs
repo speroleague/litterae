@@ -23,7 +23,11 @@ use tokio_rustls::TlsAcceptor;
 
 use common::{Error, Result};
 
-pub async fn serve(addr: &str, router: Router, tls_config: Option<Arc<ServerConfig>>) -> Result<()> {
+pub async fn serve(
+    addr: &str,
+    router: Router,
+    tls_config: Option<Arc<ServerConfig>>,
+) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| Error::Config(format!("failed to bind {addr}: {e}")))?;
@@ -96,8 +100,14 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
 
-        assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
-        assert!(response.ends_with("127.0.0.1"), "expected peer IP in body: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "unexpected response: {response}"
+        );
+        assert!(
+            response.ends_with("127.0.0.1"),
+            "expected peer IP in body: {response}"
+        );
     }
 
     #[tokio::test]
@@ -109,7 +119,10 @@ mod tests {
             generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
         let server_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(vec![cert.der().clone()], signing_key.serialize_der().try_into().unwrap())
+            .with_single_cert(
+                vec![cert.der().clone()],
+                signing_key.serialize_der().try_into().unwrap(),
+            )
             .unwrap();
 
         let router = Router::new().route(
@@ -143,8 +156,14 @@ mod tests {
         let mut response = String::new();
         tls_stream.read_to_string(&mut response).await.unwrap();
 
-        assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
-        assert!(response.ends_with("127.0.0.1"), "expected peer IP in body: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "unexpected response: {response}"
+        );
+        assert!(
+            response.ends_with("127.0.0.1"),
+            "expected peer IP in body: {response}"
+        );
     }
 
     #[tokio::test]
@@ -169,7 +188,10 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
 
-        assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "unexpected response: {response}"
+        );
         assert!(response.ends_with("pong"), "unexpected body: {response}");
     }
 
@@ -182,7 +204,10 @@ mod tests {
             generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
         let server_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(vec![cert.der().clone()], signing_key.serialize_der().try_into().unwrap())
+            .with_single_cert(
+                vec![cert.der().clone()],
+                signing_key.serialize_der().try_into().unwrap(),
+            )
             .unwrap();
 
         let router = Router::new().route("/ping", get(|| async { "pong" }));
@@ -213,7 +238,10 @@ mod tests {
         let mut response = String::new();
         tls_stream.read_to_string(&mut response).await.unwrap();
 
-        assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "unexpected response: {response}"
+        );
         assert!(response.ends_with("pong"), "unexpected body: {response}");
     }
 }

@@ -60,14 +60,21 @@ fn make_acceptor() -> (tokio_rustls::TlsAcceptor, rcgen::Certificate) {
     )
 }
 
-async fn make_deps(tls_acceptor: tokio_rustls::TlsAcceptor) -> (Arc<Deps>, Arc<QueueStore>, Arc<BlobStore>, auth::Account) {
+async fn make_deps(
+    tls_acceptor: tokio_rustls::TlsAcceptor,
+) -> (Arc<Deps>, Arc<QueueStore>, Arc<BlobStore>, auth::Account) {
     let tmp = tempfile::tempdir().unwrap();
     let blobs = Arc::new(BlobStore::open(tmp.path()).unwrap());
     let queue = Arc::new(QueueStore::open_in_memory().unwrap());
     let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
     let cfg = fast_argon2();
     let account = auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
 
     let deps = Arc::new(Deps {
@@ -82,6 +89,7 @@ async fn make_deps(tls_acceptor: tokio_rustls::TlsAcceptor) -> (Arc<Deps>, Arc<Q
             std::time::Duration::from_secs(60),
         )),
         argon2_config: Arc::new(cfg),
+        auth_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         tls_acceptor,
     });
     (deps, queue, blobs, account)
@@ -121,7 +129,14 @@ async fn implicit_tls_auth_and_submit_lands_signed_in_queue() {
         }
     }
 
-    send_line(&mut conn, &format!("AUTH PLAIN {}", sasl_plain("alice@example.com", "correct horse battery staple"))).await;
+    send_line(
+        &mut conn,
+        &format!(
+            "AUTH PLAIN {}",
+            sasl_plain("alice@example.com", "correct horse battery staple")
+        ),
+    )
+    .await;
     let reply = read_reply(&mut conn).await;
     assert!(reply.starts_with("235"), "auth should succeed: {reply}");
 
@@ -188,7 +203,10 @@ async fn starttls_requires_tls_before_auth() {
 
     send_line(&mut conn, "AUTH PLAIN AAAA").await;
     let reply = read_reply(&mut conn).await;
-    assert!(reply.starts_with("530"), "AUTH over plaintext must be refused: {reply}");
+    assert!(
+        reply.starts_with("530"),
+        "AUTH over plaintext must be refused: {reply}"
+    );
 }
 
 #[tokio::test]
@@ -223,11 +241,21 @@ async fn cannot_send_as_someone_else() {
         }
     }
 
-    send_line(&mut conn, &format!("AUTH PLAIN {}", sasl_plain("alice@example.com", "correct horse battery staple"))).await;
+    send_line(
+        &mut conn,
+        &format!(
+            "AUTH PLAIN {}",
+            sasl_plain("alice@example.com", "correct horse battery staple")
+        ),
+    )
+    .await;
     let reply = read_reply(&mut conn).await;
     assert!(reply.starts_with("235"), "{reply}");
 
     send_line(&mut conn, "MAIL FROM:<someone-else@other.example>").await;
     let reply = read_reply(&mut conn).await;
-    assert!(reply.starts_with("553"), "spoofed sender must be rejected: {reply}");
+    assert!(
+        reply.starts_with("553"),
+        "spoofed sender must be rejected: {reply}"
+    );
 }

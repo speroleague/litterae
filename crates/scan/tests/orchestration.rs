@@ -29,7 +29,10 @@ async fn fake_rspamd(action: &'static str) -> String {
         let mut buf = vec![0u8; 8192];
         let _ = stream.read(&mut buf).await.unwrap();
         let body = format!(r#"{{"score":20.0,"required_score":15.0,"action":"{action}"}}"#);
-        let response = format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let response = format!(
+            "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
         stream.write_all(response.as_bytes()).await.unwrap();
         stream.shutdown().await.unwrap();
     });
@@ -64,7 +67,10 @@ async fn not_configured_skips_entirely_with_no_network_calls() {
     let result = scanner.scan(&request(b"hello")).await;
     assert_eq!(result.verdict, Verdict::Clean);
     assert!(result.warnings.is_empty());
-    assert!(start.elapsed() < Duration::from_millis(50), "should never touch the network");
+    assert!(
+        start.elapsed() < Duration::from_millis(50),
+        "should never touch the network"
+    );
 }
 
 #[tokio::test]
@@ -89,8 +95,11 @@ async fn unreachable_clamav_fails_open_with_a_warning() {
 async fn clamav_found_overrides_rspamd_no_action() {
     let rspamd_addr = fake_rspamd("no action").await;
     let clamav_addr = fake_clamav("stream: Eicar-Test-Signature FOUND\0").await;
-    let scanner = Scanner::new(Some(RspamdClient::new(&rspamd_addr)), Some(ClamavClient::new(&clamav_addr)))
-        .with_timeout(Duration::from_secs(2));
+    let scanner = Scanner::new(
+        Some(RspamdClient::new(&rspamd_addr)),
+        Some(ClamavClient::new(&clamav_addr)),
+    )
+    .with_timeout(Duration::from_secs(2));
 
     let result = scanner.scan(&request(b"hello")).await;
     assert!(matches!(result.verdict, Verdict::Reject { .. }));
@@ -100,8 +109,11 @@ async fn clamav_found_overrides_rspamd_no_action() {
 async fn rspamd_reject_wins_regardless_of_clamav_clean() {
     let rspamd_addr = fake_rspamd("reject").await;
     let clamav_addr = fake_clamav("stream: OK\0").await;
-    let scanner = Scanner::new(Some(RspamdClient::new(&rspamd_addr)), Some(ClamavClient::new(&clamav_addr)))
-        .with_timeout(Duration::from_secs(2));
+    let scanner = Scanner::new(
+        Some(RspamdClient::new(&rspamd_addr)),
+        Some(ClamavClient::new(&clamav_addr)),
+    )
+    .with_timeout(Duration::from_secs(2));
 
     let result = scanner.scan(&request(b"hello")).await;
     assert!(matches!(result.verdict, Verdict::Reject { .. }));
@@ -110,7 +122,8 @@ async fn rspamd_reject_wins_regardless_of_clamav_clean() {
 #[tokio::test]
 async fn add_header_routes_to_spam() {
     let rspamd_addr = fake_rspamd("add header").await;
-    let scanner = Scanner::new(Some(RspamdClient::new(&rspamd_addr)), None).with_timeout(Duration::from_secs(2));
+    let scanner = Scanner::new(Some(RspamdClient::new(&rspamd_addr)), None)
+        .with_timeout(Duration::from_secs(2));
     let result = scanner.scan(&request(b"hello")).await;
     assert!(matches!(result.verdict, Verdict::Spam { .. }));
 }
@@ -118,7 +131,8 @@ async fn add_header_routes_to_spam() {
 #[tokio::test]
 async fn soft_reject_routes_to_defer() {
     let rspamd_addr = fake_rspamd("soft reject").await;
-    let scanner = Scanner::new(Some(RspamdClient::new(&rspamd_addr)), None).with_timeout(Duration::from_secs(2));
+    let scanner = Scanner::new(Some(RspamdClient::new(&rspamd_addr)), None)
+        .with_timeout(Duration::from_secs(2));
     let result = scanner.scan(&request(b"hello")).await;
     assert!(matches!(result.verdict, Verdict::Defer { .. }));
 }
@@ -138,7 +152,10 @@ async fn both_scanners_run_concurrently_not_sequentially() {
         let _ = stream.read(&mut buf).await.unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
         let body = r#"{"score":1.0,"required_score":15.0,"action":"no action"}"#;
-        let response = format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let response = format!(
+            "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
         stream.write_all(response.as_bytes()).await.unwrap();
         stream.shutdown().await.unwrap();
     });
@@ -170,5 +187,8 @@ async fn both_scanners_run_concurrently_not_sequentially() {
     let elapsed = start.elapsed();
 
     assert_eq!(result.verdict, Verdict::Clean);
-    assert!(elapsed < Duration::from_millis(280), "expected concurrent ~150ms, got {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_millis(280),
+        "expected concurrent ~150ms, got {elapsed:?}"
+    );
 }

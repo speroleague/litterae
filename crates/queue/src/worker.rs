@@ -62,6 +62,7 @@ struct ClaimedRcpt {
 }
 
 struct OutboundRow {
+    id: i64,
     message_blob: String,
     envelope_from: String,
     is_dsn: bool,
@@ -216,6 +217,7 @@ impl Worker {
             (outbound_id,),
             |row| {
                 Ok(OutboundRow {
+                    id: outbound_id,
                     message_blob: row.get(0)?,
                     envelope_from: row.get(1)?,
                     is_dsn: row.get::<_, i64>(2)? != 0,
@@ -257,7 +259,11 @@ impl Worker {
             Ok(records) => records,
             Err(e) => {
                 for rcpt in rcpts {
-                    self.finalize(rcpt, &outbound, classify_connect_failure(e.to_string(), false));
+                    self.finalize(
+                        rcpt,
+                        &outbound,
+                        classify_connect_failure(e.to_string(), false),
+                    );
                 }
                 return;
             }
@@ -329,16 +335,40 @@ impl Worker {
         let now = now_unix();
         let (state, next_attempt_at, code, status, detail) = match &outcome {
             Outcome::Delivered => (RcptState::Delivered, now, None, None, String::new()),
-            Outcome::Permanent { code, status, detail } => {
-                (RcptState::Failed, now, *code, status.clone(), detail.clone())
-            }
-            Outcome::Transient { code, status, detail } => {
+            Outcome::Permanent {
+                code,
+                status,
+                detail,
+            } => (
+                RcptState::Failed,
+                now,
+                *code,
+                status.clone(),
+                detail.clone(),
+            ),
+            Outcome::Transient {
+                code,
+                status,
+                detail,
+            } => {
                 let attempts = rcpt.attempts + 1;
                 if now >= outbound.expires_at {
-                    (RcptState::Expired, now, *code, status.clone(), detail.clone())
+                    (
+                        RcptState::Expired,
+                        now,
+                        *code,
+                        status.clone(),
+                        detail.clone(),
+                    )
                 } else {
                     let delay = next_delay_secs(attempts);
-                    (RcptState::Deferred, now + delay, *code, status.clone(), detail.clone())
+                    (
+                        RcptState::Deferred,
+                        now + delay,
+                        *code,
+                        status.clone(),
+                        detail.clone(),
+                    )
                 }
             }
         };
@@ -374,14 +404,53 @@ impl Worker {
         }
 
         if state.is_terminal() && state != RcptState::Delivered {
-            self.maybe_send_dsn(rcpt, outbound, DsnAction::Failed, code, status.as_deref(), &detail);
+            self.maybe_send_dsn(
+                rcpt,
+                outbound,
+                DsnAction::Failed,
+                code,
+                status.as_deref(),
+                &detail,
+            );
         } else if state == RcptState::Deferred
             && !rcpt.delayed_dsn_sent
             && rcpt.dsn_notify.contains("DELAY")
             && now - outbound.created_at >= DELAYED_DSN_THRESHOLD_SECS
         {
             self.mark_delayed_dsn_sent(rcpt.id);
-            self.maybe_send_dsn(rcpt, outbound, DsnAction::Delayed, code, status.as_deref(), &detail);
+            self.maybe_send_dsn(
+                rcpt,
+                outbound,
+                DsnAction::Delayed,
+                code,
+                status.as_deref(),
+                &detail,
+            );
+        }
+        self.cleanup_terminal_message(outbound);
+    }
+
+    /// Wipes the plaintext wire-form blob as soon as every recipient has
+    /// reached a terminal state. Queue rows remain for metrics and failure
+    /// diagnostics, but no message content is retained with them.
+    fn cleanup_terminal_message(&self, outbound: &OutboundRow) {
+        let no_active_reference = {
+            let conn = self.queue.conn.lock().expect("queue store mutex poisoned");
+            conn.query_row(
+                "SELECT COUNT(*) = 0
+                 FROM outbound_rcpt r
+                 JOIN outbound o ON o.id = r.outbound_id
+                 WHERE o.message_blob = ?1
+                   AND r.state NOT IN ('delivered', 'failed', 'expired')",
+                (&outbound.message_blob,),
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
+        };
+        if no_active_reference {
+            if let Err(e) = self.blobs.remove(&outbound.message_blob) {
+                tracing::warn!(error = %e, outbound_id = outbound.id, "failed to remove terminal queue blob");
+            }
         }
     }
 
@@ -435,7 +504,10 @@ impl Worker {
         };
 
         let Ok(Some(account)) = self.auth_store.find_by_id(outbound.account_id) else {
-            tracing::error!(account_id = outbound.account_id, "DSN target account not found");
+            tracing::error!(
+                account_id = outbound.account_id,
+                "DSN target account not found"
+            );
             return;
         };
         let recipient_account = RecipientAccount {
@@ -549,7 +621,16 @@ mod tests {
         let resolver = Resolver::new().unwrap();
         let audit = Arc::new(audit::AuditStore::open_in_memory().unwrap());
         audit.bootstrap_keys(&[7u8; 32]).unwrap();
-        let worker = Worker::new(queue, blobs, metadata, auth_store, audit, resolver, "mx.example.com".to_string(), Arc::new(common::changes::ChangeNotifier::new()));
+        let worker = Worker::new(
+            queue,
+            blobs,
+            metadata,
+            auth_store,
+            audit,
+            resolver,
+            "mx.example.com".to_string(),
+            Arc::new(common::changes::ChangeNotifier::new()),
+        );
         (worker, account.id)
     }
 
@@ -611,6 +692,11 @@ mod tests {
 
         worker.finalize(&claimed[0].1, &outbound, Outcome::Delivered);
 
+        assert!(
+            !worker.blobs.exists(&outbound.message_blob),
+            "terminal plaintext queue content must be removed"
+        );
+
         let conn = worker.queue.conn.lock().unwrap();
         let state: String = conn
             .query_row(
@@ -650,7 +736,10 @@ mod tests {
             .unwrap();
         assert_eq!(state, "deferred");
         assert_eq!(attempts, 1);
-        assert!(next_attempt_at > before, "next attempt should be in the future");
+        assert!(
+            next_attempt_at > before,
+            "next attempt should be in the future"
+        );
     }
 
     #[test]
@@ -715,7 +804,11 @@ mod tests {
             },
         );
 
-        assert!(worker.metadata.messages_for_account(account_id).unwrap().is_empty());
+        assert!(worker
+            .metadata
+            .messages_for_account(account_id)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -736,7 +829,10 @@ mod tests {
         let (stream, _) = listener.accept().await.unwrap();
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
-        write_half.write_all(b"220 mock.example ESMTP\r\n").await.unwrap();
+        write_half
+            .write_all(b"220 mock.example ESMTP\r\n")
+            .await
+            .unwrap();
 
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap(); // EHLO
@@ -810,12 +906,16 @@ mod tests {
             },
         ];
 
-        let outcomes = run_envelope(client, "sender@sender.example", &rcpts, b"test body\r\n").await;
+        let outcomes =
+            run_envelope(client, "sender@sender.example", &rcpts, b"test body\r\n").await;
         assert_eq!(outcomes.len(), 2);
         assert!(matches!(outcomes[0], Outcome::Delivered));
         assert!(matches!(
             outcomes[1],
-            Outcome::Permanent { code: Some(550), .. }
+            Outcome::Permanent {
+                code: Some(550),
+                ..
+            }
         ));
     }
 }

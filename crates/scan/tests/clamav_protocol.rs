@@ -56,12 +56,21 @@ async fn found_reply_is_reported() {
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let _ = read_instream_payload(&mut stream).await;
-        stream.write_all(b"stream: Eicar-Test-Signature FOUND\0").await.unwrap();
+        stream
+            .write_all(b"stream: Eicar-Test-Signature FOUND\0")
+            .await
+            .unwrap();
     });
 
     let client = ClamavClient::new(&addr.to_string());
-    let verdict = client.scan(b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR").await.unwrap();
-    assert_eq!(verdict, ClamavVerdict::Found("Eicar-Test-Signature".to_string()));
+    let verdict = client
+        .scan(b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR")
+        .await
+        .unwrap();
+    assert_eq!(
+        verdict,
+        ClamavVerdict::Found("Eicar-Test-Signature".to_string())
+    );
 
     server.await.unwrap();
 }

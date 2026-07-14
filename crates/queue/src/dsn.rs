@@ -43,7 +43,8 @@ pub struct DsnInput<'a> {
 /// for local delivery to `original_envelope_from`.
 pub fn build_dsn(input: &DsnInput) -> Result<Vec<u8>> {
     let mut human_readable = String::new();
-    human_readable.push_str("This is an automatically generated Delivery Status Notification.\r\n\r\n");
+    human_readable
+        .push_str("This is an automatically generated Delivery Status Notification.\r\n\r\n");
     for rcpt in input.recipients {
         match rcpt.action {
             DsnAction::Failed => human_readable.push_str(&format!(
@@ -64,7 +65,10 @@ pub fn build_dsn(input: &DsnInput) -> Result<Vec<u8>> {
         if let Some(s) = rcpt.status {
             status.push_str(&format!("Status: {s}\r\n"));
         }
-        status.push_str(&format!("Diagnostic-Code: smtp;{}\r\n\r\n", rcpt.diagnostic));
+        status.push_str(&format!(
+            "Diagnostic-Code: smtp;{}\r\n\r\n",
+            rcpt.diagnostic
+        ));
     }
 
     let mut report_parts = vec![
@@ -75,10 +79,7 @@ pub fn build_dsn(input: &DsnInput) -> Result<Vec<u8>> {
         report_parts.push(MimePart::raw(original.to_vec()));
     }
 
-    let body = MimePart::new(
-        "multipart/report;report-type=delivery-status",
-        report_parts,
-    );
+    let body = MimePart::new("multipart/report;report-type=delivery-status", report_parts);
 
     let subject = match input.recipients.first().map(|r| &r.action) {
         Some(DsnAction::Delayed) => "Delivery delayed",
@@ -93,7 +94,10 @@ pub fn build_dsn(input: &DsnInput) -> Result<Vec<u8>> {
         ))
         .to(input.original_envelope_from)
         .subject(subject)
-        .header("Auto-Submitted", mail_builder::headers::raw::Raw::new("auto-replied"))
+        .header(
+            "Auto-Submitted",
+            mail_builder::headers::raw::Raw::new("auto-replied"),
+        )
         .body(body)
         .write_to_vec()
         .map_err(|e| Error::Storage(format!("failed to build DSN: {e}")))

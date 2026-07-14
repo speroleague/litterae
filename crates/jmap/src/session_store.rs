@@ -5,7 +5,7 @@
 //! it.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rand::RngExt;
@@ -40,7 +40,7 @@ struct Session {
 }
 
 pub struct SessionRegistry {
-    sessions: Mutex<HashMap<String, Session>>,
+    sessions: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
     idle_timeout: Duration,
 }
 
@@ -53,7 +53,12 @@ impl SessionRegistry {
     }
 
     /// Registers a freshly-unlocked account and returns its bearer token.
-    pub fn create(&self, account_id: i64, unlocked: UnlockedAccount, identity: SessionIdentity) -> String {
+    pub fn create(
+        &self,
+        account_id: i64,
+        unlocked: UnlockedAccount,
+        identity: SessionIdentity,
+    ) -> String {
         let mut bytes = [0u8; TOKEN_LEN];
         rand::rng().fill(&mut bytes);
         let token = hex::encode(bytes);
@@ -69,17 +74,39 @@ impl SessionRegistry {
         self.sessions
             .lock()
             .expect("session registry mutex poisoned")
-            .insert(token.clone(), session);
+            .insert(token.clone(), Arc::new(Mutex::new(session)));
         token
+    }
+
+    fn get(&self, token: &str) -> Option<Arc<Mutex<Session>>> {
+        self.sessions
+            .lock()
+            .expect("session registry mutex poisoned")
+            .get(token)
+            .cloned()
+    }
+
+    fn remove_if_same(&self, token: &str, expected: &Arc<Mutex<Session>>) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("session registry mutex poisoned");
+        if sessions
+            .get(token)
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+        {
+            sessions.remove(token);
+        }
     }
 
     /// Returns the account id for a valid, unexpired token, refreshing its
     /// idle timer.
     pub fn account_id(&self, token: &str) -> Option<i64> {
-        let mut sessions = self.sessions.lock().expect("session registry mutex poisoned");
-        let session = sessions.get_mut(token)?;
+        let entry = self.get(token)?;
+        let mut session = entry.lock().expect("mailbox session mutex poisoned");
         if session.last_seen.elapsed() > self.idle_timeout {
-            sessions.remove(token);
+            drop(session);
+            self.remove_if_same(token, &entry);
             return None;
         }
         session.last_seen = Instant::now();
@@ -93,10 +120,11 @@ impl SessionRegistry {
         token: &str,
         f: impl FnOnce(i64, &[u8; crypto::hpke_seal::PRIVATE_KEY_LEN]) -> T,
     ) -> Option<T> {
-        let mut sessions = self.sessions.lock().expect("session registry mutex poisoned");
-        let session = sessions.get_mut(token)?;
+        let entry = self.get(token)?;
+        let mut session = entry.lock().expect("mailbox session mutex poisoned");
         if session.last_seen.elapsed() > self.idle_timeout {
-            sessions.remove(token);
+            drop(session);
+            self.remove_if_same(token, &entry);
             return None;
         }
         session.last_seen = Instant::now();
@@ -121,10 +149,11 @@ impl SessionRegistry {
             &AccountMasterKey,
         ) -> T,
     ) -> Option<T> {
-        let mut sessions = self.sessions.lock().expect("session registry mutex poisoned");
-        let session = sessions.get_mut(token)?;
+        let entry = self.get(token)?;
+        let mut session = entry.lock().expect("mailbox session mutex poisoned");
         if session.last_seen.elapsed() > self.idle_timeout {
-            sessions.remove(token);
+            drop(session);
+            self.remove_if_same(token, &entry);
             return None;
         }
         session.last_seen = Instant::now();
@@ -217,10 +246,13 @@ mod tests {
         let expected_priv = *unlocked.account_priv;
         let token = reg.create(9, unlocked, sample_identity());
 
-        let result = reg.with_session(&token, |account_id, priv_key, _search_index, _identity, _amk| {
-            assert_eq!(account_id, 9);
-            *priv_key
-        });
+        let result = reg.with_session(
+            &token,
+            |account_id, priv_key, _search_index, _identity, _amk| {
+                assert_eq!(account_id, 9);
+                *priv_key
+            },
+        );
         assert_eq!(result, Some(expected_priv));
     }
 }

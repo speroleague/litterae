@@ -2,7 +2,18 @@
 # certs via Caddy's internal CA instead of Let's Encrypt (no real DNS
 # needed -- docker-compose.override.yml swaps this in by default).
 
+(security_headers) {
+	header {
+		Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
 {$MAIL_HOSTNAME} {
+	import security_headers
 	tls internal
 	handle /auth/* {
 		reverse_proxy litterae:8620
@@ -21,6 +32,7 @@
 }
 
 {$ADMIN_HOSTNAME} {
+	import security_headers
 	tls internal
 	handle /admin/* {
 		reverse_proxy litterae:8621

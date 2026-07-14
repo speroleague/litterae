@@ -24,7 +24,8 @@ pub enum Outcome {
 pub fn classify_send_result(result: &Result<(), mail_send::Error>) -> Outcome {
     match result {
         Ok(()) => Outcome::Delivered,
-        Err(mail_send::Error::UnexpectedReply(resp)) | Err(mail_send::Error::AuthenticationFailed(resp)) => {
+        Err(mail_send::Error::UnexpectedReply(resp))
+        | Err(mail_send::Error::AuthenticationFailed(resp)) => {
             classify_code(resp.code, format_esc(resp.esc), resp.message.to_string())
         }
         Err(e) => Outcome::Transient {
@@ -97,13 +98,25 @@ mod tests {
     #[test]
     fn permanent_on_5xx() {
         let outcome = classify_code(550, Some("5.1.1".into()), "no such user".into());
-        assert!(matches!(outcome, Outcome::Permanent { code: Some(550), .. }));
+        assert!(matches!(
+            outcome,
+            Outcome::Permanent {
+                code: Some(550),
+                ..
+            }
+        ));
     }
 
     #[test]
     fn transient_on_4xx() {
         let outcome = classify_code(450, None, "mailbox full".into());
-        assert!(matches!(outcome, Outcome::Transient { code: Some(450), .. }));
+        assert!(matches!(
+            outcome,
+            Outcome::Transient {
+                code: Some(450),
+                ..
+            }
+        ));
     }
 
     #[test]

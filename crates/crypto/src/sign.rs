@@ -41,7 +41,11 @@ pub fn sign(keypair: &SigningKeypair, message: &[u8]) -> [u8; SIGNATURE_LEN] {
     signing_key.sign(message).to_bytes()
 }
 
-pub fn verify(public: &[u8; PUBLIC_KEY_LEN], message: &[u8], signature: &[u8; SIGNATURE_LEN]) -> bool {
+pub fn verify(
+    public: &[u8; PUBLIC_KEY_LEN],
+    message: &[u8],
+    signature: &[u8; SIGNATURE_LEN],
+) -> bool {
     let Ok(verifying_key) = VerifyingKey::from_bytes(public) else {
         return false;
     };

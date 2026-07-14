@@ -60,8 +60,10 @@ fn build_index(
     account_priv: &[u8; crypto::hpke_seal::PRIVATE_KEY_LEN],
 ) -> common::Result<Connection> {
     let conn = Connection::open_in_memory().map_err(|e| common::Error::Storage(e.to_string()))?;
-    conn.execute_batch("CREATE VIRTUAL TABLE docs USING fts5(message_id UNINDEXED, subject, body);")
-        .map_err(|e| common::Error::Storage(e.to_string()))?;
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE docs USING fts5(message_id UNINDEXED, subject, body);",
+    )
+    .map_err(|e| common::Error::Storage(e.to_string()))?;
 
     for stored in metadata.messages_for_account(account_id)? {
         let Ok(raw) = delivery::open_message(blobs, &stored, account_priv) else {
@@ -120,13 +122,21 @@ mod tests {
         delivery::deliver(
             blobs,
             metadata,
-            &RecipientAccount { id: account_id, account_pub, key_id: 1 },
+            &RecipientAccount {
+                id: account_id,
+                account_pub,
+                key_id: 1,
+            },
             &InboundEnvelope {
                 mail_from: "a@example.com".into(),
                 rcpt_to: "b@example.com".into(),
                 remote_ip: "203.0.113.5".parse().unwrap(),
             },
-            &AuthResults { spf: "pass".into(), dkim: "pass".into(), dmarc: "pass".into() },
+            &AuthResults {
+                spf: "pass".into(),
+                dkim: "pass".into(),
+                dmarc: "pass".into(),
+            },
             raw.as_bytes(),
             1_700_000_000,
             None,
@@ -142,17 +152,37 @@ mod tests {
         let metadata = MetadataStore::open_in_memory().unwrap();
         let account = HpkeKeypair::generate();
 
-        deliver_test_message(&blobs, &metadata, 1, account.public, "Quarterly report", "please review the attached numbers");
-        deliver_test_message(&blobs, &metadata, 1, account.public, "Dinner plans", "how about pizza tonight");
+        deliver_test_message(
+            &blobs,
+            &metadata,
+            1,
+            account.public,
+            "Quarterly report",
+            "please review the attached numbers",
+        );
+        deliver_test_message(
+            &blobs,
+            &metadata,
+            1,
+            account.public,
+            "Dinner plans",
+            "how about pizza tonight",
+        );
 
         let index = SearchIndex::new();
-        let hits = index.search(&blobs, &metadata, 1, &account.private, "pizza").unwrap();
+        let hits = index
+            .search(&blobs, &metadata, 1, &account.private, "pizza")
+            .unwrap();
         assert_eq!(hits.len(), 1);
 
-        let hits2 = index.search(&blobs, &metadata, 1, &account.private, "quarterly").unwrap();
+        let hits2 = index
+            .search(&blobs, &metadata, 1, &account.private, "quarterly")
+            .unwrap();
         assert_eq!(hits2.len(), 1);
 
-        let hits3 = index.search(&blobs, &metadata, 1, &account.private, "nonexistentword").unwrap();
+        let hits3 = index
+            .search(&blobs, &metadata, 1, &account.private, "nonexistentword")
+            .unwrap();
         assert!(hits3.is_empty());
     }
 
@@ -162,16 +192,34 @@ mod tests {
         let blobs = BlobStore::open(tmp.path()).unwrap();
         let metadata = MetadataStore::open_in_memory().unwrap();
         let account = HpkeKeypair::generate();
-        deliver_test_message(&blobs, &metadata, 1, account.public, "First", "alpha content");
+        deliver_test_message(
+            &blobs,
+            &metadata,
+            1,
+            account.public,
+            "First",
+            "alpha content",
+        );
 
         let index = SearchIndex::new();
-        let hits = index.search(&blobs, &metadata, 1, &account.private, "alpha").unwrap();
+        let hits = index
+            .search(&blobs, &metadata, 1, &account.private, "alpha")
+            .unwrap();
         assert_eq!(hits.len(), 1);
 
         // A message delivered after the index was built shouldn't appear
         // until a fresh SearchIndex (i.e. next unlock) is built.
-        deliver_test_message(&blobs, &metadata, 1, account.public, "Second", "beta content");
-        let hits2 = index.search(&blobs, &metadata, 1, &account.private, "beta").unwrap();
+        deliver_test_message(
+            &blobs,
+            &metadata,
+            1,
+            account.public,
+            "Second",
+            "beta content",
+        );
+        let hits2 = index
+            .search(&blobs, &metadata, 1, &account.private, "beta")
+            .unwrap();
         assert!(hits2.is_empty());
     }
 
@@ -181,16 +229,27 @@ mod tests {
         let blobs = BlobStore::open(tmp.path()).unwrap();
         let metadata = MetadataStore::open_in_memory().unwrap();
         let account = HpkeKeypair::generate();
-        deliver_test_message(&blobs, &metadata, 1, account.public, "Quarterly report", "numbers inside");
+        deliver_test_message(
+            &blobs,
+            &metadata,
+            1,
+            account.public,
+            "Quarterly report",
+            "numbers inside",
+        );
 
         let index = SearchIndex::new();
-        let hits = index.search(&blobs, &metadata, 1, &account.private, "quart").unwrap();
+        let hits = index
+            .search(&blobs, &metadata, 1, &account.private, "quart")
+            .unwrap();
         assert_eq!(hits.len(), 1);
 
         // A prefix that isn't actually a prefix of anything still finds
         // nothing -- this isn't typo-tolerant fuzzy matching, just
         // whole-word-so-far matching.
-        let no_hits = index.search(&blobs, &metadata, 1, &account.private, "zzznope").unwrap();
+        let no_hits = index
+            .search(&blobs, &metadata, 1, &account.private, "zzznope")
+            .unwrap();
         assert!(no_hits.is_empty());
     }
 
@@ -200,12 +259,21 @@ mod tests {
         let blobs = BlobStore::open(tmp.path()).unwrap();
         let metadata = MetadataStore::open_in_memory().unwrap();
         let account = HpkeKeypair::generate();
-        deliver_test_message(&blobs, &metadata, 1, account.public, "Test", "a NOT b situation");
+        deliver_test_message(
+            &blobs,
+            &metadata,
+            1,
+            account.public,
+            "Test",
+            "a NOT b situation",
+        );
 
         let index = SearchIndex::new();
         // "NOT" is an FTS5 operator; as free-text search input it must not
         // be treated as one.
-        let hits = index.search(&blobs, &metadata, 1, &account.private, "NOT").unwrap();
+        let hits = index
+            .search(&blobs, &metadata, 1, &account.private, "NOT")
+            .unwrap();
         assert_eq!(hits.len(), 1);
     }
 }

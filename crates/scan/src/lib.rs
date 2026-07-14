@@ -35,11 +35,17 @@ pub struct ScanRequest<'a> {
 pub enum Verdict {
     Clean,
     /// rspamd add-header/rewrite-subject: deliver, but route to Junk.
-    Spam { reason: String },
+    Spam {
+        reason: String,
+    },
     /// rspamd soft-reject/greylist: SMTP 4xx, sender should retry later.
-    Defer { reason: String },
+    Defer {
+        reason: String,
+    },
     /// rspamd reject, OR any ClamAV `FOUND`: SMTP 5xx, never delivered.
-    Reject { reason: String },
+    Reject {
+        reason: String,
+    },
 }
 
 pub struct ScanResult {
@@ -60,7 +66,11 @@ pub struct ScanResult {
 
 impl Scanner {
     pub fn new(rspamd: Option<rspamd::RspamdClient>, clamav: Option<clamav::ClamavClient>) -> Self {
-        Self { rspamd, clamav, timeout: DEFAULT_TIMEOUT }
+        Self {
+            rspamd,
+            clamav,
+            timeout: DEFAULT_TIMEOUT,
+        }
     }
 
     pub fn from_config(antispam: &AntispamConfig, antivirus: &AntivirusConfig) -> Self {
@@ -87,7 +97,8 @@ impl Scanner {
     /// A backend that's unreachable or times out contributes a warning
     /// and is treated as absent for this message, never as a rejection.
     pub async fn scan(&self, req: &ScanRequest<'_>) -> ScanResult {
-        let (rspamd_result, clamav_result) = tokio::join!(self.run_rspamd(req), self.run_clamav(req.raw_message));
+        let (rspamd_result, clamav_result) =
+            tokio::join!(self.run_rspamd(req), self.run_clamav(req.raw_message));
 
         let mut warnings = Vec::new();
 
@@ -103,7 +114,9 @@ impl Scanner {
 
         if let Some(Ok(clamav::ClamavVerdict::Found(sig))) = &clamav_result {
             return ScanResult {
-                verdict: Verdict::Reject { reason: format!("malware detected: {sig}") },
+                verdict: Verdict::Reject {
+                    reason: format!("malware detected: {sig}"),
+                },
                 warnings,
                 spam_score: None,
                 av_clean,
@@ -124,26 +137,49 @@ impl Scanner {
             None => Verdict::Clean,
             Some(v) => match v.action {
                 rspamd::RspamdAction::Reject => Verdict::Reject {
-                    reason: format!("rspamd reject (score {:.1}/{:.1})", v.score, v.required_score),
+                    reason: format!(
+                        "rspamd reject (score {:.1}/{:.1})",
+                        v.score, v.required_score
+                    ),
                 },
-                rspamd::RspamdAction::SoftReject | rspamd::RspamdAction::Greylist => Verdict::Defer {
-                    reason: format!("rspamd {:?} (score {:.1}/{:.1})", v.action, v.score, v.required_score),
-                },
-                rspamd::RspamdAction::AddHeader | rspamd::RspamdAction::RewriteSubject => Verdict::Spam {
-                    reason: format!("rspamd {:?} (score {:.1}/{:.1})", v.action, v.score, v.required_score),
-                },
+                rspamd::RspamdAction::SoftReject | rspamd::RspamdAction::Greylist => {
+                    Verdict::Defer {
+                        reason: format!(
+                            "rspamd {:?} (score {:.1}/{:.1})",
+                            v.action, v.score, v.required_score
+                        ),
+                    }
+                }
+                rspamd::RspamdAction::AddHeader | rspamd::RspamdAction::RewriteSubject => {
+                    Verdict::Spam {
+                        reason: format!(
+                            "rspamd {:?} (score {:.1}/{:.1})",
+                            v.action, v.score, v.required_score
+                        ),
+                    }
+                }
                 rspamd::RspamdAction::NoAction => Verdict::Clean,
                 rspamd::RspamdAction::Unknown(ref s) => {
-                    warnings.push(format!("rspamd: unrecognized action {s:?}, treating as no action"));
+                    warnings.push(format!(
+                        "rspamd: unrecognized action {s:?}, treating as no action"
+                    ));
                     Verdict::Clean
                 }
             },
         };
 
-        ScanResult { verdict, warnings, spam_score, av_clean }
+        ScanResult {
+            verdict,
+            warnings,
+            spam_score,
+            av_clean,
+        }
     }
 
-    async fn run_rspamd(&self, req: &ScanRequest<'_>) -> Option<common::Result<rspamd::RspamdVerdict>> {
+    async fn run_rspamd(
+        &self,
+        req: &ScanRequest<'_>,
+    ) -> Option<common::Result<rspamd::RspamdVerdict>> {
         let client = self.rspamd.as_ref()?;
         let check_req = rspamd::CheckRequest {
             remote_ip: req.remote_ip,
@@ -152,17 +188,21 @@ impl Scanner {
             rcpt_to: req.rcpt_to,
             raw_message: req.raw_message,
         };
-        Some(match tokio::time::timeout(self.timeout, client.check(&check_req)).await {
-            Ok(r) => r,
-            Err(_) => Err(common::Error::Network("rspamd check timed out".into())),
-        })
+        Some(
+            match tokio::time::timeout(self.timeout, client.check(&check_req)).await {
+                Ok(r) => r,
+                Err(_) => Err(common::Error::Network("rspamd check timed out".into())),
+            },
+        )
     }
 
     async fn run_clamav(&self, raw: &[u8]) -> Option<common::Result<clamav::ClamavVerdict>> {
         let client = self.clamav.as_ref()?;
-        Some(match tokio::time::timeout(self.timeout, client.scan(raw)).await {
-            Ok(r) => r,
-            Err(_) => Err(common::Error::Network("clamd scan timed out".into())),
-        })
+        Some(
+            match tokio::time::timeout(self.timeout, client.scan(raw)).await {
+                Ok(r) => r,
+                Err(_) => Err(common::Error::Network("clamd scan timed out".into())),
+            },
+        )
     }
 }

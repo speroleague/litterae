@@ -59,7 +59,9 @@ CREATE INDEX IF NOT EXISTS ix_messages_subject_hash ON messages(account_id, subj
 /// fresh database already gets these from `SCHEMA` above and this is a
 /// no-op for it.
 pub(crate) fn migrate_columns(conn: &rusqlite::Connection) -> Result<()> {
-    let mut stmt = conn.prepare("PRAGMA table_info(messages)").map_err(storage_err)?;
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(messages)")
+        .map_err(storage_err)?;
     let existing: Vec<String> = stmt
         .query_map((), |row| row.get::<_, String>(1))
         .map_err(storage_err)?
@@ -130,7 +132,8 @@ pub struct StoredMessage {
     pub av_clean: Option<bool>,
 }
 
-const MESSAGE_COLUMNS: &str = "id, account_id, mailbox_id, thread_id, blob_hash, dek_wrap, mail_from, rcpt_to,
+const MESSAGE_COLUMNS: &str =
+    "id, account_id, mailbox_id, thread_id, blob_hash, dek_wrap, mail_from, rcpt_to,
      remote_ip, size_bytes, spf_result, dkim_result, dmarc_result, received_at, keywords,
      message_id_header, in_reply_to, references_header, subject_hash, spam_score, av_clean";
 
@@ -196,7 +199,11 @@ impl MetadataStore {
             .map_err(storage_err)
     }
 
-    pub fn messages_in_mailbox(&self, account_id: i64, mailbox_id: i64) -> Result<Vec<StoredMessage>> {
+    pub fn messages_in_mailbox(
+        &self,
+        account_id: i64,
+        mailbox_id: i64,
+    ) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().expect("metadata store mutex poisoned");
         let mut stmt = conn
             .prepare(&format!(
@@ -211,7 +218,11 @@ impl MetadataStore {
             .map_err(storage_err)
     }
 
-    pub fn messages_with_keyword(&self, account_id: i64, keyword: &str) -> Result<Vec<StoredMessage>> {
+    pub fn messages_with_keyword(
+        &self,
+        account_id: i64,
+        keyword: &str,
+    ) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().expect("metadata store mutex poisoned");
         let mut stmt = conn
             .prepare(&format!(
@@ -230,7 +241,11 @@ impl MetadataStore {
     /// The inverse of `messages_with_keyword` -- e.g. "unread" (everything
     /// missing `$seen`) spanning every mailbox at once, the same way
     /// `messages_with_keyword` already does for "flagged".
-    pub fn messages_without_keyword(&self, account_id: i64, keyword: &str) -> Result<Vec<StoredMessage>> {
+    pub fn messages_without_keyword(
+        &self,
+        account_id: i64,
+        keyword: &str,
+    ) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().expect("metadata store mutex poisoned");
         let mut stmt = conn
             .prepare(&format!(
@@ -246,7 +261,11 @@ impl MetadataStore {
             .map_err(storage_err)
     }
 
-    pub fn messages_in_thread(&self, account_id: i64, thread_id: i64) -> Result<Vec<StoredMessage>> {
+    pub fn messages_in_thread(
+        &self,
+        account_id: i64,
+        thread_id: i64,
+    ) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().expect("metadata store mutex poisoned");
         let mut stmt = conn
             .prepare(&format!(
@@ -391,7 +410,9 @@ mod tests {
         let store = MetadataStore::open_in_memory().unwrap();
         let id = store.insert_message(&sample(1)).unwrap();
 
-        store.update_message(id, Some(2), Some("$seen,$flagged")).unwrap();
+        store
+            .update_message(id, Some(2), Some("$seen,$flagged"))
+            .unwrap();
         let stored = store.get_message(id).unwrap().unwrap();
         assert_eq!(stored.mailbox_id, 2);
         assert_eq!(stored.keywords, "$seen,$flagged");

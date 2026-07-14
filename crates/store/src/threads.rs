@@ -2,9 +2,10 @@
 //! computed once, at ingest, while the message is briefly plaintext --
 //! same principle as any other body-derived classification (spec's
 //! auto-file-by-body-keyword rule). The join keys it produces
-//! (Message-ID, normalized-subject hash) are auto-generated identifiers,
-//! not sensitive prose, so storing them in cleartext metadata doesn't leak
-//! anything the message headers don't already show in transit.
+//! Message-ID references and a per-account salted normalized-subject hash are
+//! stored in cleartext metadata. The hash avoids storing subject prose and
+//! prevents cross-account correlation, but does not claim dictionary-attack
+//! resistance because its salt is the account's public key.
 
 use common::Result;
 
@@ -43,12 +44,20 @@ impl MetadataStore {
         self.create_thread(m.account_id)
     }
 
-    fn thread_by_reference(&self, account_id: i64, reference_ids: &[String]) -> Result<Option<i64>> {
+    fn thread_by_reference(
+        &self,
+        account_id: i64,
+        reference_ids: &[String],
+    ) -> Result<Option<i64>> {
         if reference_ids.is_empty() {
             return Ok(None);
         }
         let conn = self.conn.lock().expect("metadata store mutex poisoned");
-        let placeholders = reference_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = reference_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let sql = format!(
             "SELECT thread_id FROM messages
              WHERE account_id = ? AND message_id_header IN ({placeholders})
@@ -77,8 +86,11 @@ impl MetadataStore {
 
     fn create_thread(&self, account_id: i64) -> Result<i64> {
         let conn = self.conn.lock().expect("metadata store mutex poisoned");
-        conn.execute("INSERT INTO threads (account_id) VALUES (?1)", (account_id,))
-            .map_err(storage_err)?;
+        conn.execute(
+            "INSERT INTO threads (account_id) VALUES (?1)",
+            (account_id,),
+        )
+        .map_err(storage_err)?;
         Ok(conn.last_insert_rowid())
     }
 }
@@ -126,7 +138,12 @@ mod tests {
     use super::*;
     use crate::messages::NewMessage;
 
-    fn sample<'a>(account_id: i64, thread_id: i64, message_id: &'a str, subject_hash: &'a str) -> NewMessage<'a> {
+    fn sample<'a>(
+        account_id: i64,
+        thread_id: i64,
+        message_id: &'a str,
+        subject_hash: &'a str,
+    ) -> NewMessage<'a> {
         NewMessage {
             account_id,
             mailbox_id: 1,

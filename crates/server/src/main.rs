@@ -54,19 +54,38 @@ async fn main() {
     let argon2_config = Arc::new(config.argon2.clone());
 
     if let Some((username, password)) = config.admin.bootstrap_credentials() {
-        match admin_store.bootstrap(username, password.as_bytes(), &argon2_config) {
-            Ok(Some(pk)) => {
-                tracing::info!(username, "admin bootstrap created");
-                if let Err(e) = audit_store.bootstrap_keys(&pk) {
-                    tracing::error!(error = %e, "audit log key bootstrap failed");
+        match admin_store.has_admin() {
+            Ok(true) => {
+                tracing::info!(username, "admin bootstrap skipped (admin already exists)");
+            }
+            Ok(false) => {
+                if insecure_bootstrap_password(password) {
+                    tracing::error!(
+                        "refusing insecure admin bootstrap password; set a unique value of at least 12 characters"
+                    );
+                    std::process::exit(1);
+                }
+                match admin_store.bootstrap(username, password.as_bytes(), &argon2_config) {
+                    Ok(Some(pk)) => {
+                        tracing::info!(username, "admin bootstrap created");
+                        if let Err(e) = audit_store.bootstrap_keys(&pk) {
+                            tracing::error!(error = %e, "audit log key bootstrap failed");
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::info!(username, "admin bootstrap skipped (admin already exists)");
+                    }
+                    Err(e) => tracing::error!(error = %e, "admin bootstrap failed"),
                 }
             }
-            Ok(None) => tracing::info!(username, "admin bootstrap checked (admin already exists)"),
-            Err(e) => tracing::error!(error = %e, "admin bootstrap failed"),
+            Err(e) => tracing::error!(error = %e, "admin bootstrap check failed"),
         }
     }
 
-    let scanner = Arc::new(scan::Scanner::from_config(&config.antispam, &config.antivirus));
+    let scanner = Arc::new(scan::Scanner::from_config(
+        &config.antispam,
+        &config.antivirus,
+    ));
     tracing::info!(
         antispam = config.antispam.is_enabled(),
         antivirus = config.antivirus.is_enabled(),
@@ -210,6 +229,13 @@ async fn main() {
     }
 }
 
+fn insecure_bootstrap_password(password: &str) -> bool {
+    matches!(
+        password,
+        "change-me-please" | "REPLACE_WITH_A_STRONG_UNIQUE_PASSWORD"
+    ) || password.len() < 12
+}
+
 /// `litterae provision <local_part> <domain> <password>` -- mints a new
 /// account against the configured storage and exits. Prefer the admin API
 /// for day-to-day use; this stays for scripting/first-run setups.
@@ -245,7 +271,11 @@ fn dkim_init(config: &Config, args: &[String]) {
         Ok(key) => {
             println!("DKIM key ready for {domain} (selector: {})", key.selector);
             println!("Publish this TXT record:");
-            println!("  {}._domainkey.{domain}  IN TXT  \"{}\"", key.selector, key.dns_txt_record());
+            println!(
+                "  {}._domainkey.{domain}  IN TXT  \"{}\"",
+                key.selector,
+                key.dns_txt_record()
+            );
         }
         Err(e) => {
             eprintln!("failed to generate DKIM key: {e}");
@@ -269,15 +299,13 @@ fn domain_cli(config: &Config, args: &[String]) {
     };
 
     match args.split_first() {
-        Some((cmd, [name])) if cmd == "add" => {
-            match admin_store.create_domain(name, None) {
-                Ok(domain) => println!("hosting {}", domain.name),
-                Err(e) => {
-                    eprintln!("failed to add domain: {e}");
-                    std::process::exit(1);
-                }
+        Some((cmd, [name])) if cmd == "add" => match admin_store.create_domain(name, None) {
+            Ok(domain) => println!("hosting {}", domain.name),
+            Err(e) => {
+                eprintln!("failed to add domain: {e}");
+                std::process::exit(1);
             }
-        }
+        },
         Some((cmd, [name, catch_all])) if cmd == "add" => {
             match admin_store.create_domain(name, Some(catch_all)) {
                 Ok(domain) => println!("hosting {} (catch-all: {catch_all})", domain.name),
@@ -304,7 +332,11 @@ fn domain_cli(config: &Config, args: &[String]) {
             }
         },
         Some((cmd, [name, local_part])) if cmd == "set-catchall" => {
-            let catch_all = if local_part == "none" { None } else { Some(local_part.as_str()) };
+            let catch_all = if local_part == "none" {
+                None
+            } else {
+                Some(local_part.as_str())
+            };
             let Ok(Some(domain)) = admin_store.get_domain_by_name(name) else {
                 eprintln!("no such hosted domain: {name}");
                 std::process::exit(1);

@@ -113,7 +113,9 @@ impl DomainKey {
         // used internally to compute the signature, not a usable header --
         // `HeaderWriter::to_header()` is what actually produces
         // "DKIM-Signature: ...\r\n".
-        Ok(mail_auth::common::headers::HeaderWriter::to_header(&signature))
+        Ok(mail_auth::common::headers::HeaderWriter::to_header(
+            &signature,
+        ))
     }
 }
 

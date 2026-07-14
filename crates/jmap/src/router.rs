@@ -4,6 +4,7 @@ use std::time::Duration;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
+use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 
 use audit::AuditStore;
@@ -23,6 +24,7 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 const THROTTLE_BASE_DELAY: Duration = Duration::from_secs(1);
 const THROTTLE_MAX_DELAY: Duration = Duration::from_secs(60);
+const MAX_CONCURRENT_PASSWORD_KDFS: usize = 2;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -33,6 +35,7 @@ pub struct AppState {
     pub argon2_config: Arc<Argon2Config>,
     pub sessions: Arc<SessionRegistry>,
     pub login_throttle: Arc<LoginThrottle>,
+    pub auth_semaphore: Arc<Semaphore>,
     /// Outbound queue/DKIM -- only touched by the compose-send path
     /// (`EmailSubmission/set`), everything else in this crate is read-only
     /// against `metadata`/`blobs`.
@@ -62,6 +65,7 @@ impl AppState {
             argon2_config,
             sessions: Arc::new(SessionRegistry::new(DEFAULT_IDLE_TIMEOUT)),
             login_throttle: Arc::new(LoginThrottle::new(THROTTLE_BASE_DELAY, THROTTLE_MAX_DELAY)),
+            auth_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_KDFS)),
             queue_store,
             notifier,
         }

@@ -33,7 +33,10 @@ pub fn init() -> Option<tracing_appender::non_blocking::WorkerGuard> {
             Some(guard)
         }
         Err(_) => {
-            tracing_subscriber::registry().with(filter).with(stdout_layer).init();
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(stdout_layer)
+                .init();
             None
         }
     }

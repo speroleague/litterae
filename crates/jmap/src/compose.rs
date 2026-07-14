@@ -23,7 +23,21 @@ pub fn build(
     in_reply_to_header: Option<&str>,
     references_header: Option<&str>,
     sent_at: i64,
-) -> RawMessage {
+) -> Result<RawMessage, String> {
+    if !common::input::valid_email_address(from_address)
+        || subject.is_some_and(|value| !common::input::valid_header_value(value))
+        || in_reply_to_header.is_some_and(|value| !common::input::valid_header_value(value))
+        || references_header.is_some_and(|value| !common::input::valid_header_value(value))
+        || to.iter().chain(cc.iter()).any(|address| {
+            !common::input::valid_email_address(&address.email)
+                || address
+                    .name
+                    .as_deref()
+                    .is_some_and(|value| !common::input::valid_header_value(value))
+        })
+    {
+        return Err("invalid message header value".to_string());
+    }
     let message_id_header = generate_message_id(from_address);
 
     let mut raw = String::new();
@@ -48,10 +62,10 @@ pub fn build(
     raw.push_str("\r\n");
     raw.push_str(body_text.unwrap_or(""));
 
-    RawMessage {
+    Ok(RawMessage {
         bytes: raw.into_bytes(),
         message_id_header,
-    }
+    })
 }
 
 fn format_address_list(addrs: &[EmailAddressIn]) -> String {
@@ -66,7 +80,10 @@ fn format_address_list(addrs: &[EmailAddressIn]) -> String {
 }
 
 fn generate_message_id(from_address: &str) -> String {
-    let domain = from_address.rsplit_once('@').map(|(_, d)| d).unwrap_or("localhost");
+    let domain = from_address
+        .rsplit_once('@')
+        .map(|(_, d)| d)
+        .unwrap_or("localhost");
     let mut bytes = [0u8; 16];
     rand::rng().fill(&mut bytes);
     format!("<{}@{}>", hex::encode(bytes), domain)
@@ -132,14 +149,18 @@ mod tests {
     fn build_includes_recipients_subject_and_body() {
         let msg = build(
             "alice@example.test",
-            &[EmailAddressIn { name: None, email: "bob@example.test".into() }],
+            &[EmailAddressIn {
+                name: None,
+                email: "bob@example.test".into(),
+            }],
             &[],
             Some("Hello"),
             Some("hi there"),
             None,
             None,
             1_700_000_000,
-        );
+        )
+        .unwrap();
         let text = String::from_utf8(msg.bytes).unwrap();
         assert!(text.contains("From: alice@example.test\r\n"));
         assert!(text.contains("To: bob@example.test\r\n"));
@@ -151,7 +172,7 @@ mod tests {
 
     #[test]
     fn build_omits_cc_header_when_empty() {
-        let msg = build("alice@example.test", &[], &[], None, None, None, None, 0);
+        let msg = build("alice@example.test", &[], &[], None, None, None, None, 0).unwrap();
         let text = String::from_utf8(msg.bytes).unwrap();
         assert!(!text.contains("Cc:"));
     }
@@ -161,5 +182,20 @@ mod tests {
         let a = generate_message_id("alice@example.test");
         let b = generate_message_id("alice@example.test");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn rejects_header_injection() {
+        assert!(build(
+            "alice@example.test",
+            &[],
+            &[],
+            Some("hello\r\nBcc: victim@example.net"),
+            None,
+            None,
+            None,
+            0,
+        )
+        .is_err());
     }
 }

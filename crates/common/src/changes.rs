@@ -39,7 +39,10 @@ impl ChangeNotifier {
 
     pub fn notify(&self, account_id: i64) {
         let state = {
-            let mut counters = self.counters.lock().expect("change notifier mutex poisoned");
+            let mut counters = self
+                .counters
+                .lock()
+                .expect("change notifier mutex poisoned");
             let entry = counters.entry(account_id).or_insert(0);
             *entry += 1;
             *entry
@@ -79,9 +82,27 @@ mod tests {
         notifier.notify(1);
         notifier.notify(2);
         notifier.notify(1);
-        assert_eq!(rx.try_recv().unwrap(), AccountChanged { account_id: 1, state: 1 });
-        assert_eq!(rx.try_recv().unwrap(), AccountChanged { account_id: 2, state: 1 });
-        assert_eq!(rx.try_recv().unwrap(), AccountChanged { account_id: 1, state: 2 });
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AccountChanged {
+                account_id: 1,
+                state: 1
+            }
+        );
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AccountChanged {
+                account_id: 2,
+                state: 1
+            }
+        );
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AccountChanged {
+                account_id: 1,
+                state: 2
+            }
+        );
     }
 
     #[test]

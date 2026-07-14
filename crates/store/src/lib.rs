@@ -9,7 +9,9 @@ pub mod metadata;
 pub mod threads;
 
 pub use blob::BlobStore;
-pub use mailboxes::{Mailbox, ROLE_ARCHIVE, ROLE_DRAFTS, ROLE_INBOX, ROLE_JUNK, ROLE_SENT, ROLE_TRASH};
+pub use mailboxes::{
+    Mailbox, ROLE_ARCHIVE, ROLE_DRAFTS, ROLE_INBOX, ROLE_JUNK, ROLE_SENT, ROLE_TRASH,
+};
 pub use messages::{NewMessage, StoredMessage, KEYWORD_DRAFT, KEYWORD_JUNK};
 pub use metadata::MetadataStore;
 pub use threads::{normalize_subject, ThreadMatch};

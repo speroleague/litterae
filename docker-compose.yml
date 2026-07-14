@@ -82,7 +82,7 @@ services:
     ports:
       # CrowdSec's local API, for a firewall bouncer installed on the
       # Docker host to reach (see crowdsec/README.md).
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - litterae-logs:/var/log/litterae:ro
       - crowdsec-data:/var/lib/crowdsec/data
@@ -118,7 +118,8 @@ services:
           if [ -f "$$src/$$MAIL_HOSTNAME.crt" ]; then
             cp "$$src/$$MAIL_HOSTNAME.crt" /out/submission.crt.tmp
             cp "$$src/$$MAIL_HOSTNAME.key" /out/submission.key.tmp
-            chmod 644 /out/submission.crt.tmp /out/submission.key.tmp
+            chown 10001:10001 /out/submission.crt.tmp /out/submission.key.tmp
+            chmod 640 /out/submission.crt.tmp /out/submission.key.tmp
             mv /out/submission.crt.tmp /out/submission.crt
             mv /out/submission.key.tmp /out/submission.key
           fi

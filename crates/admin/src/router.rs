@@ -5,6 +5,7 @@ use std::time::Duration;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
+use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 
 use audit::AuditStore;
@@ -24,6 +25,7 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
 const THROTTLE_BASE_DELAY: Duration = Duration::from_secs(1);
 const THROTTLE_MAX_DELAY: Duration = Duration::from_secs(60);
+const MAX_CONCURRENT_PASSWORD_KDFS: usize = 2;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -34,6 +36,7 @@ pub struct AppState {
     pub argon2_config: Arc<Argon2Config>,
     pub sessions: Arc<AdminSessionRegistry>,
     pub login_throttle: Arc<LoginThrottle>,
+    pub auth_semaphore: Arc<Semaphore>,
     /// Set from `LITTERAE_LOG_DIR` (see `common::tracing_init::init`) --
     /// `None` means file logging isn't enabled, so `/admin/logs` has
     /// nothing to read (stdout-only logging has no file to tail).
@@ -64,6 +67,7 @@ impl AppState {
             argon2_config,
             sessions: Arc::new(AdminSessionRegistry::new(DEFAULT_IDLE_TIMEOUT)),
             login_throttle: Arc::new(LoginThrottle::new(THROTTLE_BASE_DELAY, THROTTLE_MAX_DELAY)),
+            auth_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_KDFS)),
             log_dir,
             dns_resolver,
         }
@@ -76,14 +80,20 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/login", post(handlers::login))
         .route("/admin/logout", post(handlers::logout))
         .route("/admin/change-password", post(handlers::change_password))
-        .route("/admin/domains", get(handlers::list_domains).post(handlers::create_domain))
+        .route(
+            "/admin/domains",
+            get(handlers::list_domains).post(handlers::create_domain),
+        )
         .route(
             "/admin/domains/{id}",
             patch(handlers::update_domain).delete(handlers::delete_domain),
         )
         .route("/admin/domains/{id}/dkim", get(handlers::domain_dkim))
         .route("/admin/domains/{id}/verify", post(handlers::verify_domain))
-        .route("/admin/accounts", get(handlers::list_accounts).post(handlers::create_account))
+        .route(
+            "/admin/accounts",
+            get(handlers::list_accounts).post(handlers::create_account),
+        )
         .route("/admin/accounts/{id}", delete(handlers::delete_account))
         .route("/admin/queue", get(handlers::queue_status))
         .route("/admin/audit", get(handlers::audit_log))

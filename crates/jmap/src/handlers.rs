@@ -17,9 +17,7 @@ use tokio::sync::broadcast;
 
 use crate::api::{dispatch, AccountContext};
 use crate::session_store::SessionIdentity;
-use crate::types::{
-    JmapAccount, JmapSession, Request, Response, CAPABILITY_CORE, CAPABILITY_MAIL,
-};
+use crate::types::{JmapAccount, JmapSession, Request, Response, CAPABILITY_CORE, CAPABILITY_MAIL};
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -56,11 +54,29 @@ pub async fn unlock(
         tracing::warn!(event = "auth_failure", remote_ip = %peer.ip(), identity, "jmap unlock failed: no such account");
         return Err(StatusCode::UNAUTHORIZED);
     };
-    let unlocked = match state.auth_store.unlock(&account, req.password.as_bytes(), &state.argon2_config) {
+    let permit = state
+        .auth_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let auth_store = state.auth_store.clone();
+    let argon2_config = state.argon2_config.clone();
+    let account_for_unlock = account.clone();
+    let password = req.password;
+    let unlock_result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        auth_store.unlock(&account_for_unlock, password.as_bytes(), &argon2_config)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let unlocked = match unlock_result {
         Ok(unlocked) => unlocked,
         Err(_) => {
             state.login_throttle.record_failure(&identity);
-            let _ = state.audit_store.log("auth.unlock_failed", &account.address());
+            let _ = state
+                .audit_store
+                .log("auth.unlock_failed", &account.address());
             tracing::warn!(event = "auth_failure", remote_ip = %peer.ip(), identity, "jmap unlock failed: wrong password");
             return Err(StatusCode::UNAUTHORIZED);
         }
@@ -72,7 +88,9 @@ pub async fn unlock(
         key_id: account.key_id,
         address: account.address(),
     };
-    let token = state.sessions.create(account.id, unlocked, session_identity);
+    let token = state
+        .sessions
+        .create(account.id, unlocked, session_identity);
     let _ = state.audit_store.log("auth.unlock", &account.address());
     Ok(Json(UnlockResponse {
         token,
@@ -83,7 +101,9 @@ pub async fn unlock(
 pub async fn lock(State(state): State<AppState>, headers: HeaderMap) -> StatusCode {
     if let Some(token) = bearer_token(&headers) {
         if let Some(account_id) = state.sessions.account_id(token) {
-            let _ = state.audit_store.log("session.close", &account_id.to_string());
+            let _ = state
+                .audit_store
+                .log("session.close", &account_id.to_string());
         }
         state.sessions.remove(token);
     }
@@ -155,26 +175,35 @@ pub async fn jmap_api(
         // index come from the same locked section (see with_session's
         // doc) so a text-search filter doesn't need to re-lock the
         // registry.
-        let response = state.sessions.with_session(token, |account_id, account_priv, search_index, identity, amk| {
-            let search_fn = |query: &str| -> common::Result<Vec<i64>> {
-                search_index.search(&state.blobs, &state.metadata, account_id, account_priv, query)
-            };
-            let ctx = AccountContext {
-                account_id_str: account_id_str.clone(),
-                blobs: &state.blobs,
-                metadata: &state.metadata,
-                queue: &state.queue_store,
-                auth_store: &state.auth_store,
-                account_priv,
-                account_pub: &identity.account_pub,
-                key_id: identity.key_id,
-                address: &identity.address,
-                amk,
-                search: &search_fn,
-                notifier: &state.notifier,
-            };
-            dispatch(call, &ctx)
-        });
+        let response = state.sessions.with_session(
+            token,
+            |account_id, account_priv, search_index, identity, amk| {
+                let search_fn = |query: &str| -> common::Result<Vec<i64>> {
+                    search_index.search(
+                        &state.blobs,
+                        &state.metadata,
+                        account_id,
+                        account_priv,
+                        query,
+                    )
+                };
+                let ctx = AccountContext {
+                    account_id_str: account_id_str.clone(),
+                    blobs: &state.blobs,
+                    metadata: &state.metadata,
+                    queue: &state.queue_store,
+                    auth_store: &state.auth_store,
+                    account_priv,
+                    account_pub: &identity.account_pub,
+                    key_id: identity.key_id,
+                    address: &identity.address,
+                    amk,
+                    search: &search_fn,
+                    notifier: &state.notifier,
+                };
+                dispatch(call, &ctx)
+            },
+        );
         match response {
             Some(r) => method_responses.push(r),
             None => return Err(StatusCode::UNAUTHORIZED),

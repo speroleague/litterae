@@ -43,7 +43,10 @@ async fn sends_expected_headers_and_parses_the_response() {
             remote_ip: "203.0.113.5".parse().unwrap(),
             helo: "mail.sender.example.net",
             mail_from: "sender@example.net",
-            rcpt_to: &["alice@example.com".to_string(), "bob@example.com".to_string()],
+            rcpt_to: &[
+                "alice@example.com".to_string(),
+                "bob@example.com".to_string(),
+            ],
             raw_message: b"hello world",
         })
         .await

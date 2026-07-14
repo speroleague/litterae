@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use mail_auth::MessageAuthenticator;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 use admin::AdminStore;
 use auth::AuthStore;
@@ -27,6 +28,8 @@ pub async fn run(
     audit: Arc<audit::AuditStore>,
     notifier: Arc<common::changes::ChangeNotifier>,
 ) -> Result<()> {
+    const MAX_CONNECTIONS: usize = 512;
+    const MAX_SESSION_DURATION: std::time::Duration = std::time::Duration::from_secs(10 * 60);
     let tls_acceptor = load_acceptor(config)?;
     let authenticator = Arc::new(
         MessageAuthenticator::new_system_conf()
@@ -52,6 +55,7 @@ pub async fn run(
         .map_err(|e| Error::Config(format!("failed to bind {}: {e}", config.listen_addr)))?;
     tracing::info!(addr = %config.listen_addr, tls = deps.tls_acceptor.is_some(), "smtp-in listening");
 
+    let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
@@ -60,9 +64,23 @@ pub async fn run(
                 continue;
             }
         };
+        let Ok(permit) = connection_limit.clone().try_acquire_owned() else {
+            tracing::warn!(%peer, "rejecting SMTP connection: connection limit reached");
+            drop(stream);
+            continue;
+        };
         let deps = deps.clone();
         tokio::spawn(async move {
-            session::handle_connection(stream, peer.ip(), deps).await;
+            let _permit = permit;
+            if tokio::time::timeout(
+                MAX_SESSION_DURATION,
+                session::handle_connection(stream, peer.ip(), deps),
+            )
+            .await
+            .is_err()
+            {
+                tracing::warn!(%peer, "SMTP session timed out");
+            }
         });
     }
 }

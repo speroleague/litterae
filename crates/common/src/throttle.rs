@@ -57,13 +57,19 @@ impl LoginThrottle {
         });
         entry.failures = entry.failures.saturating_add(1);
         let exponent = entry.failures.saturating_sub(1).min(10);
-        let delay = self.base_delay.saturating_mul(1u32 << exponent).min(self.max_delay);
+        let delay = self
+            .base_delay
+            .saturating_mul(1u32 << exponent)
+            .min(self.max_delay);
         entry.locked_until = Instant::now() + delay;
     }
 
     /// Clears the failure count on a successful login.
     pub fn record_success(&self, key: &str) {
-        self.state.lock().expect("login throttle mutex poisoned").remove(key);
+        self.state
+            .lock()
+            .expect("login throttle mutex poisoned")
+            .remove(key);
     }
 }
 

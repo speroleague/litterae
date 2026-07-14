@@ -113,7 +113,10 @@ pub fn deliver(
         .collect();
     let subject_hash = parsed.subject().map(|s| {
         let normalized = normalize_subject(s);
-        hex::encode(Sha256::digest(normalized.as_bytes()))
+        let mut hash = Sha256::new();
+        hash.update(account.account_pub);
+        hash.update(normalized.as_bytes());
+        hex::encode(hash.finalize())
     });
 
     let mailbox = if spam_reason.is_some() {
@@ -147,7 +150,11 @@ pub fn deliver(
         dkim_result: &auth_results.dkim,
         dmarc_result: &auth_results.dmarc,
         received_at,
-        keywords: if spam_reason.is_some() { KEYWORD_JUNK } else { "" },
+        keywords: if spam_reason.is_some() {
+            KEYWORD_JUNK
+        } else {
+            ""
+        },
         message_id_header: message_id_header.as_deref(),
         in_reply_to: (!in_reply_to_header.is_empty()).then_some(in_reply_to_header.as_str()),
         references_header: (!references_header.is_empty()).then_some(references_header.as_str()),
@@ -350,7 +357,11 @@ mod tests {
         let delivered = deliver(
             &blobs,
             &metadata,
-            &RecipientAccount { id: 1, account_pub: account.public, key_id: 1 },
+            &RecipientAccount {
+                id: 1,
+                account_pub: account.public,
+                key_id: 1,
+            },
             &envelope(),
             &auth_results(),
             RAW_MESSAGE,
@@ -361,7 +372,10 @@ mod tests {
         .unwrap();
 
         let stored = metadata.get_message(delivered.message_id).unwrap().unwrap();
-        let inbox = metadata.get_mailbox_by_role(1, store::ROLE_INBOX).unwrap().unwrap();
+        let inbox = metadata
+            .get_mailbox_by_role(1, store::ROLE_INBOX)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.mailbox_id, inbox.id);
     }
 
@@ -375,7 +389,11 @@ mod tests {
         let delivered = deliver(
             &blobs,
             &metadata,
-            &RecipientAccount { id: 1, account_pub: account.public, key_id: 1 },
+            &RecipientAccount {
+                id: 1,
+                account_pub: account.public,
+                key_id: 1,
+            },
             &envelope(),
             &auth_results(),
             RAW_MESSAGE,
@@ -386,7 +404,10 @@ mod tests {
         .unwrap();
 
         let stored = metadata.get_message(delivered.message_id).unwrap().unwrap();
-        let junk = metadata.get_mailbox_by_role(1, store::ROLE_JUNK).unwrap().unwrap();
+        let junk = metadata
+            .get_mailbox_by_role(1, store::ROLE_JUNK)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.mailbox_id, junk.id);
         assert!(stored.keywords.contains(store::KEYWORD_JUNK));
     }
@@ -397,7 +418,11 @@ mod tests {
         let blobs = BlobStore::open(tmp.path()).unwrap();
         let metadata = MetadataStore::open_in_memory().unwrap();
         let account = HpkeKeypair::generate();
-        let recipient_account = RecipientAccount { id: 1, account_pub: account.public, key_id: 1 };
+        let recipient_account = RecipientAccount {
+            id: 1,
+            account_pub: account.public,
+            key_id: 1,
+        };
 
         let original = deliver(
             &blobs,
@@ -436,7 +461,11 @@ mod tests {
         let blobs = BlobStore::open(tmp.path()).unwrap();
         let metadata = MetadataStore::open_in_memory().unwrap();
         let account = HpkeKeypair::generate();
-        let recipient_account = RecipientAccount { id: 1, account_pub: account.public, key_id: 1 };
+        let recipient_account = RecipientAccount {
+            id: 1,
+            account_pub: account.public,
+            key_id: 1,
+        };
 
         let first = deliver(
             &blobs, &metadata, &recipient_account, &envelope(), &auth_results(),

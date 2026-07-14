@@ -26,7 +26,9 @@ fn test_resolver() -> Arc<dns::Resolver> {
 }
 
 async fn json_body(resp: axum::response::Response) -> serde_json::Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
@@ -37,12 +39,18 @@ async fn request(
     token: Option<&str>,
     body: Option<serde_json::Value>,
 ) -> axum::response::Response {
-    let mut builder = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json");
     if let Some(token) = token {
         builder = builder.header("authorization", format!("Bearer {token}"));
     }
     let body = body.map(|b| b.to_string()).unwrap_or_default();
-    app.clone().oneshot(builder.body(Body::from(body)).unwrap()).await.unwrap()
+    app.clone()
+        .oneshot(builder.body(Body::from(body)).unwrap())
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -55,7 +63,15 @@ async fn bootstrap_login_forced_reset_domains_accounts_and_queue() {
     let blobs = BlobStore::open(tmp.path()).unwrap();
     let cfg = Arc::new(fast_argon2());
 
-    let state = AppState::new(admin_store.clone(), auth_store, queue_store.clone(), audit_store.clone(), cfg.clone(), None, test_resolver());
+    let state = AppState::new(
+        admin_store.clone(),
+        auth_store,
+        queue_store.clone(),
+        audit_store.clone(),
+        cfg.clone(),
+        None,
+        test_resolver(),
+    );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
     ));
@@ -65,7 +81,10 @@ async fn bootstrap_login_forced_reset_domains_accounts_and_queue() {
     let body = json_body(resp).await;
     assert_eq!(body["hasAdmin"], false);
 
-    let bootstrap_pk = admin_store.bootstrap("admin", b"change-me-please", &cfg).unwrap().unwrap();
+    let bootstrap_pk = admin_store
+        .bootstrap("admin", b"change-me-please", &cfg)
+        .unwrap()
+        .unwrap();
     audit_store.bootstrap_keys(&bootstrap_pk).unwrap();
 
     let resp = request(&app, "GET", "/admin/status", None, None).await;
@@ -85,6 +104,11 @@ async fn bootstrap_login_forced_reset_domains_accounts_and_queue() {
     let body = json_body(resp).await;
     assert_eq!(body["mustChangePassword"], true);
     let token = body["token"].as_str().unwrap().to_string();
+
+    // A bootstrap session is restricted server-side, not merely redirected
+    // by the browser UI.
+    let resp = request(&app, "GET", "/admin/domains", Some(&token), None).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
     // --- Change password; old password stops working, new one works. ---
     let resp = request(
@@ -182,7 +206,7 @@ async fn bootstrap_login_forced_reset_domains_accounts_and_queue() {
         "POST",
         "/admin/accounts",
         Some(&token),
-        Some(serde_json::json!({"localPart": "alice", "domain": "example.com", "password": "pw123456"})),
+        Some(serde_json::json!({"localPart": "alice", "domain": "example.com", "password": "pw123456789012"})),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -194,7 +218,14 @@ async fn bootstrap_login_forced_reset_domains_accounts_and_queue() {
     let accounts = json_body(resp).await;
     assert_eq!(accounts.as_array().unwrap().len(), 1);
 
-    let resp = request(&app, "DELETE", &format!("/admin/accounts/{account_id}"), Some(&token), None).await;
+    let resp = request(
+        &app,
+        "DELETE",
+        &format!("/admin/accounts/{account_id}"),
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     let resp = request(&app, "GET", "/admin/accounts", Some(&token), None).await;
     let accounts = json_body(resp).await;
@@ -266,10 +297,21 @@ async fn domain_dkim_and_verification_endpoints() {
     let queue_store = Arc::new(QueueStore::open_in_memory().unwrap());
     let audit_store = Arc::new(audit::AuditStore::open_in_memory().unwrap());
     let cfg = Arc::new(fast_argon2());
-    let bootstrap_pk = admin_store.bootstrap("admin", b"pw", &cfg).unwrap().unwrap();
+    let bootstrap_pk = admin_store
+        .bootstrap("admin", b"pw", &cfg)
+        .unwrap()
+        .unwrap();
     audit_store.bootstrap_keys(&bootstrap_pk).unwrap();
 
-    let state = AppState::new(admin_store, auth_store, queue_store, audit_store, cfg, None, test_resolver());
+    let state = AppState::new(
+        admin_store,
+        auth_store,
+        queue_store,
+        audit_store,
+        cfg,
+        None,
+        test_resolver(),
+    );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
     ));
@@ -283,6 +325,15 @@ async fn domain_dkim_and_verification_endpoints() {
     )
     .await;
     let token = json_body(resp).await["token"].as_str().unwrap().to_string();
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/change-password",
+        Some(&token),
+        Some(serde_json::json!({"currentPassword": "pw", "newPassword": "strong-test-password"})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let resp = request(
         &app,
@@ -298,14 +349,31 @@ async fn domain_dkim_and_verification_endpoints() {
     assert!(!created["verificationToken"].as_str().unwrap().is_empty());
 
     // --- DKIM record: generated on first request, stable on repeat calls. ---
-    let resp = request(&app, "GET", &format!("/admin/domains/{domain_id}/dkim"), Some(&token), None).await;
+    let resp = request(
+        &app,
+        "GET",
+        &format!("/admin/domains/{domain_id}/dkim"),
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let dkim = json_body(resp).await;
     assert_eq!(dkim["domain"], "example.com");
-    assert!(dkim["recordName"].as_str().unwrap().ends_with("._domainkey.example.com"));
+    assert!(dkim["recordName"]
+        .as_str()
+        .unwrap()
+        .ends_with("._domainkey.example.com"));
     let first_value = dkim["recordValue"].as_str().unwrap().to_string();
 
-    let resp = request(&app, "GET", &format!("/admin/domains/{domain_id}/dkim"), Some(&token), None).await;
+    let resp = request(
+        &app,
+        "GET",
+        &format!("/admin/domains/{domain_id}/dkim"),
+        Some(&token),
+        None,
+    )
+    .await;
     let dkim_again = json_body(resp).await;
     assert_eq!(dkim_again["recordValue"].as_str().unwrap(), first_value);
 
@@ -313,20 +381,44 @@ async fn domain_dkim_and_verification_endpoints() {
     // publish our specific challenge token, so this must come back false
     // rather than erroring -- a live DNS lookup happens, it just finds no
     // matching record. ---
-    let resp = request(&app, "POST", &format!("/admin/domains/{domain_id}/verify"), Some(&token), None).await;
+    let resp = request(
+        &app,
+        "POST",
+        &format!("/admin/domains/{domain_id}/verify"),
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let verify = json_body(resp).await;
     assert_eq!(verify["verified"], false);
-    assert!(verify["recordName"].as_str().unwrap().starts_with("_litterae-challenge."));
+    assert!(verify["recordName"]
+        .as_str()
+        .unwrap()
+        .starts_with("_litterae-challenge."));
 
     let resp = request(&app, "GET", "/admin/domains", Some(&token), None).await;
     let domains = json_body(resp).await;
     assert_eq!(domains[0]["verified"], false);
 
     // --- Unauthenticated requests are rejected on both new routes. ---
-    let resp = request(&app, "GET", &format!("/admin/domains/{domain_id}/dkim"), None, None).await;
+    let resp = request(
+        &app,
+        "GET",
+        &format!("/admin/domains/{domain_id}/dkim"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    let resp = request(&app, "POST", &format!("/admin/domains/{domain_id}/verify"), None, None).await;
+    let resp = request(
+        &app,
+        "POST",
+        &format!("/admin/domains/{domain_id}/verify"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -346,15 +438,20 @@ async fn logs_endpoint_filters_by_time_and_level() {
     let lines = [
         format!(
             r#"{{"timestamp":"{}","level":"INFO","fields":{{"message":"old info line"}},"target":"litterae"}}"#,
-            old.format(&time::format_description::well_known::Rfc3339).unwrap()
+            old.format(&time::format_description::well_known::Rfc3339)
+                .unwrap()
         ),
         format!(
             r#"{{"timestamp":"{}","level":"WARN","fields":{{"message":"recent warn line"}},"target":"litterae"}}"#,
-            recent.format(&time::format_description::well_known::Rfc3339).unwrap()
+            recent
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap()
         ),
         format!(
             r#"{{"timestamp":"{}","level":"INFO","fields":{{"message":"recent info line"}},"target":"litterae"}}"#,
-            recent.format(&time::format_description::well_known::Rfc3339).unwrap()
+            recent
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap()
         ),
     ];
     std::fs::write(log_dir.path().join(&file_name), lines.join("\n")).unwrap();
@@ -364,7 +461,11 @@ async fn logs_endpoint_filters_by_time_and_level() {
     let queue_store = Arc::new(QueueStore::open_in_memory().unwrap());
     let audit_store = Arc::new(audit::AuditStore::open_in_memory().unwrap());
     let cfg = Arc::new(fast_argon2());
-    admin_store.bootstrap("admin", b"pw", &cfg).unwrap();
+    let bootstrap_pk = admin_store
+        .bootstrap("admin", b"pw", &cfg)
+        .unwrap()
+        .unwrap();
+    audit_store.bootstrap_keys(&bootstrap_pk).unwrap();
 
     let state = AppState::new(
         admin_store,
@@ -388,6 +489,15 @@ async fn logs_endpoint_filters_by_time_and_level() {
     )
     .await;
     let token = json_body(resp).await["token"].as_str().unwrap().to_string();
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/change-password",
+        Some(&token),
+        Some(serde_json::json!({"currentPassword": "pw", "newPassword": "strong-test-password"})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     // No filters: all 3 lines, newest first.
     let resp = request(&app, "GET", "/admin/logs", Some(&token), None).await;
@@ -399,7 +509,14 @@ async fn logs_endpoint_filters_by_time_and_level() {
 
     // since = 30 minutes ago: excludes the 2h-old line.
     let since = (today - time::Duration::minutes(30)).unix_timestamp();
-    let resp = request(&app, "GET", &format!("/admin/logs?since={since}"), Some(&token), None).await;
+    let resp = request(
+        &app,
+        "GET",
+        &format!("/admin/logs?since={since}"),
+        Some(&token),
+        None,
+    )
+    .await;
     let body = json_body(resp).await;
     assert_eq!(body.as_array().unwrap().len(), 2);
 
@@ -422,9 +539,21 @@ async fn logs_endpoint_returns_empty_without_a_log_dir() {
     let queue_store = Arc::new(QueueStore::open_in_memory().unwrap());
     let audit_store = Arc::new(audit::AuditStore::open_in_memory().unwrap());
     let cfg = Arc::new(fast_argon2());
-    admin_store.bootstrap("admin", b"pw", &cfg).unwrap();
+    let bootstrap_pk = admin_store
+        .bootstrap("admin", b"pw", &cfg)
+        .unwrap()
+        .unwrap();
+    audit_store.bootstrap_keys(&bootstrap_pk).unwrap();
 
-    let state = AppState::new(admin_store, auth_store, queue_store, audit_store, cfg.clone(), None, test_resolver());
+    let state = AppState::new(
+        admin_store,
+        auth_store,
+        queue_store,
+        audit_store,
+        cfg.clone(),
+        None,
+        test_resolver(),
+    );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
     ));
@@ -438,6 +567,15 @@ async fn logs_endpoint_returns_empty_without_a_log_dir() {
     )
     .await;
     let token = json_body(resp).await["token"].as_str().unwrap().to_string();
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/change-password",
+        Some(&token),
+        Some(serde_json::json!({"currentPassword": "pw", "newPassword": "strong-test-password"})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let resp = request(&app, "GET", "/admin/logs", Some(&token), None).await;
     assert_eq!(resp.status(), StatusCode::OK);

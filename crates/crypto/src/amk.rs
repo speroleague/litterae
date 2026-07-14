@@ -87,6 +87,9 @@ mod tests {
         let unwrapped = unwrap_amk(&new_pk, &wrapped_new).unwrap();
         assert_eq!(unwrapped.as_bytes(), amk.as_bytes());
         // Old wrap remains valid under the old PK until explicitly discarded.
-        assert_eq!(unwrap_amk(&old_pk, &wrapped_old).unwrap().as_bytes(), amk.as_bytes());
+        assert_eq!(
+            unwrap_amk(&old_pk, &wrapped_old).unwrap().as_bytes(),
+            amk.as_bytes()
+        );
     }
 }

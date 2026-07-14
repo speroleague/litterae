@@ -24,20 +24,26 @@ pub enum ClamavVerdict {
 
 impl ClamavClient {
     pub fn new(endpoint: &str) -> Self {
-        Self { endpoint: Endpoint::parse(endpoint) }
+        Self {
+            endpoint: Endpoint::parse(endpoint),
+        }
     }
 
     pub async fn scan(&self, raw_message: &[u8]) -> common::Result<ClamavVerdict> {
         let mut conn = connect(&self.endpoint).await?;
 
-        conn.write_all(b"zINSTREAM\0").await.map_err(common::Error::Io)?;
+        conn.write_all(b"zINSTREAM\0")
+            .await
+            .map_err(common::Error::Io)?;
         for chunk in raw_message.chunks(CHUNK_SIZE) {
             conn.write_all(&(chunk.len() as u32).to_be_bytes())
                 .await
                 .map_err(common::Error::Io)?;
             conn.write_all(chunk).await.map_err(common::Error::Io)?;
         }
-        conn.write_all(&0u32.to_be_bytes()).await.map_err(common::Error::Io)?;
+        conn.write_all(&0u32.to_be_bytes())
+            .await
+            .map_err(common::Error::Io)?;
 
         let mut line = Vec::new();
         let mut byte = [0u8; 1];
@@ -64,7 +70,9 @@ fn parse_stream_reply(line: &str) -> common::Result<ClamavVerdict> {
     if let Some(sig) = rest.strip_suffix("FOUND") {
         return Ok(ClamavVerdict::Found(sig.trim().to_string()));
     }
-    Err(common::Error::Network(format!("unrecognized clamd reply: {line:?}")))
+    Err(common::Error::Network(format!(
+        "unrecognized clamd reply: {line:?}"
+    )))
 }
 
 #[cfg(test)]
@@ -73,7 +81,10 @@ mod tests {
 
     #[test]
     fn clean_reply_parses() {
-        assert_eq!(parse_stream_reply("stream: OK").unwrap(), ClamavVerdict::Clean);
+        assert_eq!(
+            parse_stream_reply("stream: OK").unwrap(),
+            ClamavVerdict::Clean
+        );
     }
 
     #[test]

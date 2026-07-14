@@ -40,7 +40,11 @@ pub(crate) async fn connect(endpoint: &Endpoint) -> common::Result<Conn> {
 }
 
 impl AsyncRead for Conn {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Conn::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             Conn::Unix(s) => Pin::new(s).poll_read(cx, buf),
@@ -49,7 +53,11 @@ impl AsyncRead for Conn {
 }
 
 impl AsyncWrite for Conn {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
         match self.get_mut() {
             Conn::Tcp(s) => Pin::new(s).poll_write(cx, buf),
             Conn::Unix(s) => Pin::new(s).poll_write(cx, buf),
@@ -77,12 +85,18 @@ mod tests {
 
     #[test]
     fn slash_prefixed_string_is_a_unix_socket() {
-        assert!(matches!(Endpoint::parse("/var/run/rspamd/rspamd.sock"), Endpoint::Unix(_)));
+        assert!(matches!(
+            Endpoint::parse("/var/run/rspamd/rspamd.sock"),
+            Endpoint::Unix(_)
+        ));
     }
 
     #[test]
     fn host_port_string_is_tcp() {
-        assert!(matches!(Endpoint::parse("127.0.0.1:11333"), Endpoint::Tcp(_)));
+        assert!(matches!(
+            Endpoint::parse("127.0.0.1:11333"),
+            Endpoint::Tcp(_)
+        ));
         assert!(matches!(Endpoint::parse("rspamd:11333"), Endpoint::Tcp(_)));
     }
 }

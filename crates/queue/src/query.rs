@@ -34,7 +34,8 @@ impl QueueStore {
         let rows = stmt
             .query_map((outbound_id,), row_to_recipient)
             .map_err(storage_err)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(storage_err)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err)
     }
 
     /// Recipient counts by state -- the admin area's queue-at-a-glance.
@@ -79,7 +80,8 @@ impl QueueStore {
         let rows = stmt
             .query_map((limit,), row_to_recipient)
             .map_err(storage_err)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(storage_err)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err)
     }
 }
 

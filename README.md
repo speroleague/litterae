@@ -23,10 +23,14 @@ cert for it (`docker-compose.override.yml` swaps in `Caddyfile.local` for
 this; your browser will warn about the cert, that's expected).
 
 Admin login is whatever you set `LITTERAE_ADMIN_USERNAME` /
-`LITTERAE_ADMIN_PASSWORD` to in `.env` (defaults: `admin` /
-`change-me-please`) -- you'll be forced to change the password on first
-login. From there, add a domain and create a mailbox account in the admin
-panel, then log into `mail.localtest.me` with that account.
+`LITTERAE_ADMIN_PASSWORD` to in `.env`. On a new installation, you must
+replace the password placeholder before startup; insecure bootstrap values
+are rejected. The first session is restricted to changing that password
+before any other admin API can be used. On an existing installation these
+environment variables are ignored once an admin exists, so leaving the old
+placeholder in place does not prevent a restart or reset the current password.
+From there, add a domain and create a mailbox account in the admin panel, then
+log into `mail.localtest.me` with that account.
 
 Outbound mail to the real internet won't deliver from this local setup
 (see "Real deployment" below for why) -- it's for exercising the UI and
@@ -263,9 +267,10 @@ encrypted and unreachable.
 **Admin login rejected after you know you set a password.** The admin
 bootstrap (`LITTERAE_ADMIN_USERNAME`/`PASSWORD` in `.env`) only ever
 fires once, the first time no admin account exists yet -- editing those
-values later does nothing. If you've since changed the password through
-the admin UI's forced-reset flow, use that password, not what's in
-`.env`.
+values later does nothing. Existing installations may leave the original
+placeholder in `.env`; it is ignored after the admin exists. If you've since
+changed the password through the admin UI's forced-reset flow, use that
+password, not what's in `.env`.
 
 ## How it works
 
@@ -340,8 +345,13 @@ server seal inbound mail without ever touching the private key. Each
 message gets its own random 256-bit DEK (XChaCha20-Poly1305 seals the
 message body), and that DEK is HPKE-sealed to `account_pub`. Net effect:
 someone with full read access to the disk (a backup, a compromised host)
-gets ciphertext and cleartext account public keys -- no message content,
-no private keys -- until a specific mailbox's password is supplied.
+gets ciphertext and cleartext account public keys for mailbox storage -- no
+stored mailbox content and no private keys -- until a specific mailbox's
+password is supplied. The active outbound retry spool is an explicit,
+short-lived exception: delivery must continue while the mailbox is locked,
+so its DKIM-signed wire form is plaintext until every recipient is terminal,
+at which point Litterae removes it. Protect `/data` with encrypted storage
+such as LUKS if active queued mail is within your offline-seizure threat model.
 Every sealed/wrapped blob on disk starts with a small crypto-agility
 header (`magic | version | alg_id | key_id | nonce`) so a future
 post-quantum migration touches one crate (`crypto`), not the on-disk
@@ -351,9 +361,11 @@ format everywhere it's used.
 (`mail_from`/`rcpt_to`/`remote_ip`), SPF/DKIM/DMARC verdicts,
 mailbox/keyword assignment, and `Message-ID`/`In-Reply-To`/`References`
 headers are stored in cleartext -- this is what lets mail get routed,
-listed, and threaded without a live unlocked session. `Subject` is not
-one of them: only a salted hash of the normalized subject is stored (for
-thread-matching), never the subject text itself.
+listed, and threaded without a live unlocked session. `Subject` is not one
+of them: only a per-account hash of the normalized subject, salted with that
+account's public key, is stored for thread matching. This prevents
+cross-account correlation but is not intended to resist a targeted dictionary
+attack; the subject text itself is never stored there.
 
 **What's not built yet, said plainly**: account key rotation and a
 password-recovery path are both designed in `Claude.md` but not

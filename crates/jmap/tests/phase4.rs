@@ -127,6 +127,8 @@ async fn flag_move_delete_search_and_threads() {
         Arc::new(cfg),
         Arc::new(queue::QueueStore::open_in_memory().unwrap()),
         Arc::new(common::changes::ChangeNotifier::new()),
+        None,
+        25 * 1024 * 1024,
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
@@ -387,6 +389,8 @@ async fn unread_filter_spans_every_mailbox_and_pagination_reports_a_stable_total
         Arc::new(cfg),
         Arc::new(queue::QueueStore::open_in_memory().unwrap()),
         Arc::new(common::changes::ChangeNotifier::new()),
+        None,
+        25 * 1024 * 1024,
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),

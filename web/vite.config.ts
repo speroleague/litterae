@@ -11,7 +11,20 @@ import { TRUSTED_SCRIPT } from './src/lib/mailBodyFrame';
 // rather than hand-copied so it can't silently drift out of sync.
 const trustedScriptHash: `sha256-${string}` = `sha256-${createHash('sha256').update(TRUSTED_SCRIPT).digest('base64')}`;
 
+// Dev-only: `vite dev` serves this app on its own port, so without a proxy
+// every /auth and /jmap call would be cross-origin and get blocked by the
+// connect-src 'self' CSP below (the real deployment has no such gap --
+// Caddy reverse-proxies both from the same origin, see docker-compose.yml).
+// Only affects `vite dev`; a static `vite build` has no server to proxy.
+const devApiTarget = process.env.VITE_DEV_API_PROXY_TARGET ?? 'http://127.0.0.1:8620';
+
 export default defineConfig({
+	server: {
+		proxy: {
+			'/auth': devApiTarget,
+			'/jmap': devApiTarget
+		}
+	},
 	plugins: [
 		tailwindcss(),
 		sveltekit({

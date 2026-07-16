@@ -1,5 +1,15 @@
-//! Assembles a raw RFC 5322 message from a JMAP compose request. The one
-//! place in this crate that writes MIME instead of reading it.
+//! Assembles a raw RFC 5322 message from a JMAP compose request, via
+//! `mail_builder::MessageBuilder` (multipart/attachment encoding, MIME
+//! boundaries, etc. -- nothing here hand-rolls MIME anymore).
+//!
+//! `mail_builder` does **not** protect against CRLF header injection on
+//! its own (traced: a value containing a well-formed `\r\n` pair never
+//! trips its "needs encoding" path and gets written raw). The only thing
+//! preventing it is `common::input::valid_header_value`/
+//! `valid_email_address`, called on every header-bound value -- including
+//! attachment filenames -- before anything reaches the builder. Do not
+//! remove these checks under the assumption the "real MIME library"
+//! handles it; it doesn't.
 
 use rand::RngExt;
 
@@ -10,7 +20,22 @@ use crate::types::EmailAddressIn;
 /// aren't DKIM-signed but are still real headers a compliant client expects.
 pub struct RawMessage {
     pub bytes: Vec<u8>,
+    /// Bare, unbracketed (`"hex@domain"`, not `"<hex@domain>"`) -- matches
+    /// `mail_parser::Message::message_id()`'s convention for inbound mail,
+    /// which is also unbracketed. `store::threads` joins messages by exact
+    /// string equality on this column, so compose- and delivery-created
+    /// messages must agree on format or reply-threading silently stops
+    /// matching by Message-ID (falling back to the subject-hash path).
     pub message_id_header: String,
+}
+
+/// A file to attach, already scanned and validated by the caller
+/// (`crates/jmap/src/handlers.rs`'s upload handler) -- this module only
+/// assembles MIME, it doesn't scan or seal anything.
+pub struct Attachment {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -23,6 +48,7 @@ pub fn build(
     in_reply_to_header: Option<&str>,
     references_header: Option<&str>,
     sent_at: i64,
+    attachments: &[Attachment],
 ) -> Result<RawMessage, String> {
     if !common::input::valid_email_address(from_address)
         || subject.is_some_and(|value| !common::input::valid_header_value(value))
@@ -35,48 +61,84 @@ pub fn build(
                     .as_deref()
                     .is_some_and(|value| !common::input::valid_header_value(value))
         })
+        || attachments.iter().any(|a| {
+            !common::input::valid_header_value(&a.filename)
+                || !common::input::valid_header_value(&a.content_type)
+        })
     {
         return Err("invalid message header value".to_string());
     }
-    let message_id_header = generate_message_id(from_address);
 
-    let mut raw = String::new();
-    raw.push_str(&format!("From: {from_address}\r\n"));
+    let message_id = generate_message_id(from_address);
+
+    let mut builder = mail_builder::MessageBuilder::new()
+        .from(from_address)
+        .message_id(message_id.as_str())
+        .date(sent_at)
+        .subject(subject.unwrap_or(""))
+        .text_body(body_text.unwrap_or(""));
+
     if !to.is_empty() {
-        raw.push_str(&format!("To: {}\r\n", format_address_list(to)));
+        builder = builder.to(to_address_list(to));
     }
     if !cc.is_empty() {
-        raw.push_str(&format!("Cc: {}\r\n", format_address_list(cc)));
+        builder = builder.cc(to_address_list(cc));
     }
-    raw.push_str(&format!("Subject: {}\r\n", subject.unwrap_or("")));
-    raw.push_str(&format!("Date: {}\r\n", rfc2822(sent_at)));
-    raw.push_str(&format!("Message-ID: {message_id_header}\r\n"));
     if let Some(irt) = in_reply_to_header {
-        raw.push_str(&format!("In-Reply-To: {irt}\r\n"));
+        builder = builder.in_reply_to(parse_message_ids(irt));
     }
     if let Some(refs) = references_header {
-        raw.push_str(&format!("References: {refs}\r\n"));
+        builder = builder.references(parse_message_ids(refs));
     }
-    raw.push_str("MIME-Version: 1.0\r\n");
-    raw.push_str("Content-Type: text/plain; charset=utf-8\r\n");
-    raw.push_str("\r\n");
-    raw.push_str(body_text.unwrap_or(""));
+    for attachment in attachments {
+        builder = builder.attachment(
+            attachment.content_type.clone(),
+            attachment.filename.clone(),
+            attachment.bytes.clone(),
+        );
+    }
+
+    let bytes = builder
+        .write_to_vec()
+        .map_err(|e| format!("failed to assemble message: {e}"))?;
 
     Ok(RawMessage {
-        bytes: raw.into_bytes(),
-        message_id_header,
+        bytes,
+        message_id_header: message_id,
     })
 }
 
-fn format_address_list(addrs: &[EmailAddressIn]) -> String {
-    addrs
-        .iter()
-        .map(|a| match &a.name {
-            Some(name) if !name.is_empty() => format!("{name} <{}>", a.email),
-            _ => a.email.clone(),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
+fn to_address_list(addrs: &[EmailAddressIn]) -> mail_builder::headers::address::Address<'_> {
+    mail_builder::headers::address::Address::new_list(
+        addrs
+            .iter()
+            .map(|a| match &a.name {
+                Some(name) if !name.is_empty() => {
+                    mail_builder::headers::address::Address::new_address(
+                        Some(name.as_str()),
+                        a.email.as_str(),
+                    )
+                }
+                _ => mail_builder::headers::address::Address::new_address(
+                    None::<&str>,
+                    a.email.as_str(),
+                ),
+            })
+            .collect(),
+    )
+}
+
+/// `mail_builder`'s `MessageId` header writer always wraps each id in
+/// `<...>` itself -- callers must hand it bare ids, not pre-bracketed
+/// ones (verified: `MessageId::write_header` unconditionally emits `<`
+/// and `>` around every entry). `in_reply_to_header`/`references_header`
+/// arrive here already RFC-5322-formatted (space-separated, bracketed,
+/// e.g. `"<a@b> <c@d>"`), so this splits and strips brackets back off.
+fn parse_message_ids(header_value: &str) -> Vec<&str> {
+    header_value
+        .split_whitespace()
+        .map(|id| id.trim_start_matches('<').trim_end_matches('>'))
+        .collect()
 }
 
 fn generate_message_id(from_address: &str) -> String {
@@ -86,64 +148,12 @@ fn generate_message_id(from_address: &str) -> String {
         .unwrap_or("localhost");
     let mut bytes = [0u8; 16];
     rand::rng().fill(&mut bytes);
-    format!("<{}@{}>", hex::encode(bytes), domain)
-}
-
-/// RFC 5322 §3.3 Date header. A minimal formatter (UTC only, matching
-/// `email::iso8601`'s reasoning for not pulling in a datetime crate for one
-/// field) -- this one just needs weekday/month names on top of the same
-/// civil-date math.
-fn rfc2822(unix_secs: i64) -> String {
-    const WEEKDAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-
-    let days_since_epoch = unix_secs.div_euclid(86400);
-    let secs_of_day = unix_secs.rem_euclid(86400);
-    let (year, month, day) = civil_from_days(days_since_epoch);
-    let hour = secs_of_day / 3600;
-    let minute = (secs_of_day % 3600) / 60;
-    let second = secs_of_day % 60;
-    // Unix epoch (1970-01-01) was a Thursday, i.e. offset 0 into WEEKDAYS.
-    let weekday = WEEKDAYS[days_since_epoch.rem_euclid(7) as usize];
-    let month_name = MONTHS[(month - 1) as usize];
-
-    format!("{weekday}, {day:02} {month_name} {year:04} {hour:02}:{minute:02}:{second:02} +0000")
-}
-
-/// Howard Hinnant's `civil_from_days` algorithm -- duplicated from
-/// `email.rs` rather than shared, since that copy is private to this crate
-/// and small enough that a shared module would be more ceremony than the
-/// ~10 lines it saves.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
+    format!("{}@{}", hex::encode(bytes), domain)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rfc2822_formats_known_timestamp() {
-        // 2024-01-15T12:30:00Z was a Monday.
-        assert_eq!(rfc2822(1_705_321_800), "Mon, 15 Jan 2024 12:30:00 +0000");
-    }
-
-    #[test]
-    fn rfc2822_formats_epoch_thursday() {
-        assert_eq!(rfc2822(0), "Thu, 01 Jan 1970 00:00:00 +0000");
-    }
 
     #[test]
     fn build_includes_recipients_subject_and_body() {
@@ -159,20 +169,33 @@ mod tests {
             None,
             None,
             1_700_000_000,
+            &[],
         )
         .unwrap();
         let text = String::from_utf8(msg.bytes).unwrap();
-        assert!(text.contains("From: alice@example.test\r\n"));
-        assert!(text.contains("To: bob@example.test\r\n"));
+        assert!(text.contains("From: <alice@example.test>\r\n"));
+        assert!(text.contains("To: <bob@example.test>\r\n"));
         assert!(text.contains("Subject: Hello\r\n"));
-        assert!(text.ends_with("hi there"));
-        assert!(msg.message_id_header.starts_with('<'));
-        assert!(msg.message_id_header.ends_with("@example.test>"));
+        assert!(text.contains("hi there"));
+        assert!(!msg.message_id_header.starts_with('<'));
+        assert!(msg.message_id_header.ends_with("@example.test"));
+        assert!(text.contains(&format!("Message-ID: <{}>", msg.message_id_header)));
     }
 
     #[test]
     fn build_omits_cc_header_when_empty() {
-        let msg = build("alice@example.test", &[], &[], None, None, None, None, 0).unwrap();
+        let msg = build(
+            "alice@example.test",
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            0,
+            &[],
+        )
+        .unwrap();
         let text = String::from_utf8(msg.bytes).unwrap();
         assert!(!text.contains("Cc:"));
     }
@@ -195,7 +218,73 @@ mod tests {
             None,
             None,
             0,
+            &[],
         )
         .is_err());
+    }
+
+    #[test]
+    fn rejects_header_injection_in_attachment_filename() {
+        assert!(build(
+            "alice@example.test",
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            0,
+            &[Attachment {
+                filename: "innocuous.txt\r\nBcc: victim@example.net".to_string(),
+                content_type: "text/plain".to_string(),
+                bytes: b"hi".to_vec(),
+            }],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn attachment_bytes_and_filename_survive_round_trip() {
+        let msg = build(
+            "alice@example.test",
+            &[],
+            &[],
+            None,
+            Some("body"),
+            None,
+            None,
+            0,
+            &[Attachment {
+                filename: "invoice.pdf".to_string(),
+                content_type: "application/pdf".to_string(),
+                bytes: b"%PDF-1.4 fake".to_vec(),
+            }],
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&msg.bytes);
+        assert!(text.contains("invoice.pdf"));
+        assert!(text.contains("application/pdf"));
+        // Base64-encoded attachment content, not the raw bytes verbatim.
+        assert!(!text.contains("%PDF-1.4 fake"));
+    }
+
+    #[test]
+    fn in_reply_to_and_references_are_not_double_bracketed() {
+        let msg = build(
+            "alice@example.test",
+            &[],
+            &[],
+            None,
+            None,
+            Some("<parent@example.net>"),
+            Some("<a@example.net> <parent@example.net>"),
+            0,
+            &[],
+        )
+        .unwrap();
+        let text = String::from_utf8(msg.bytes).unwrap();
+        assert!(text.contains("In-Reply-To: <parent@example.net>\r\n"));
+        assert!(!text.contains("<<parent@example.net>>"));
+        assert!(text.contains("References: <a@example.net> <parent@example.net>\r\n"));
     }
 }

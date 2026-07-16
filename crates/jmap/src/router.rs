@@ -12,6 +12,7 @@ use auth::AuthStore;
 use common::config::Argon2Config;
 use common::throttle::LoginThrottle;
 use queue::QueueStore;
+use scan::clamav::ClamavClient;
 use store::{BlobStore, MetadataStore};
 
 use crate::handlers;
@@ -44,6 +45,14 @@ pub struct AppState {
     /// outbound worker so inbound delivery and DSNs also wake up an open
     /// SSE stream, not just this crate's own mutations.
     pub notifier: Arc<common::changes::ChangeNotifier>,
+    /// `None` means AV is unconfigured (`antivirus.endpoint` unset), same
+    /// as everywhere else in this system -- `/jmap/upload` then lets files
+    /// through unscanned rather than breaking every upload for an operator
+    /// who never set up clamd.
+    pub clamav: Option<Arc<ClamavClient>>,
+    /// Caps a single `/jmap/upload` body and, separately, an assembled
+    /// outbound message's total attachment size at send time.
+    pub max_upload_size: usize,
 }
 
 impl AppState {
@@ -56,6 +65,8 @@ impl AppState {
         argon2_config: Arc<Argon2Config>,
         queue_store: Arc<QueueStore>,
         notifier: Arc<common::changes::ChangeNotifier>,
+        clamav: Option<Arc<ClamavClient>>,
+        max_upload_size: usize,
     ) -> Self {
         Self {
             auth_store,
@@ -68,6 +79,8 @@ impl AppState {
             auth_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_KDFS)),
             queue_store,
             notifier,
+            clamav,
+            max_upload_size,
         }
     }
 }
@@ -78,13 +91,91 @@ pub fn build_router(state: AppState) -> Router {
     // never cookies -- there's no ambient credential for a cross-origin
     // request to ride along on, so a permissive CORS policy doesn't open a
     // CSRF hole the way it would for a cookie-authenticated API.
+    // Per-route `.layer(...)` on the upload route runs closer to the
+    // handler than the router-wide `DefaultBodyLimit` below, so it wins:
+    // `DefaultBodyLimit` doesn't nest limits, it just stashes the active
+    // one in a request extension, and each layer's `call()` overwrites
+    // whatever the outer one stashed. Confirmed against axum-core's
+    // `DefaultBodyLimitService` -- not just going by the doc example.
+    let upload_body_limit = DefaultBodyLimit::max(state.max_upload_size);
     Router::new()
         .route("/auth/unlock", post(handlers::unlock))
         .route("/auth/lock", post(handlers::lock))
         .route("/jmap/session", get(handlers::jmap_session))
         .route("/jmap/api", post(handlers::jmap_api))
         .route("/jmap/sse", get(handlers::sse))
+        .route("/jmap/download/{blob_id}", get(handlers::download))
+        .route(
+            "/jmap/upload",
+            post(handlers::upload).layer(upload_body_limit),
+        )
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use super::*;
+
+    fn test_state(max_upload_size: usize) -> AppState {
+        let tmp = tempfile::tempdir().unwrap();
+        AppState::new(
+            Arc::new(AuthStore::open_in_memory().unwrap()),
+            Arc::new(BlobStore::open(tmp.path()).unwrap()),
+            Arc::new(MetadataStore::open_in_memory().unwrap()),
+            Arc::new(AuditStore::open_in_memory().unwrap()),
+            Arc::new(Argon2Config {
+                m_cost_kib: 8 * 1024,
+                t_cost: 1,
+                p_cost: 1,
+            }),
+            Arc::new(QueueStore::open_in_memory().unwrap()),
+            Arc::new(common::changes::ChangeNotifier::new()),
+            None,
+            max_upload_size,
+        )
+    }
+
+    /// The router-wide `DefaultBodyLimit` (sized for JSON method-call
+    /// bodies) must not shadow the larger per-route limit on
+    /// `/jmap/upload` -- axum layers don't nest limits, each one just
+    /// overwrites a request-extension value, so whichever layer runs
+    /// closer to the handler wins. This proves that's actually the
+    /// upload route's own layer, not the router-wide one, by sending a
+    /// body bigger than the router-wide cap to both routes.
+    #[tokio::test]
+    async fn upload_route_accepts_a_body_larger_than_the_api_routes_cap() {
+        let oversized = vec![0u8; MAX_REQUEST_BODY_BYTES + 1024];
+        let state = test_state(oversized.len() + 1024);
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/jmap/upload")
+            .header("content-type", "application/octet-stream")
+            .header("authorization", "Bearer nonexistent-token")
+            .body(Body::from(oversized.clone()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        // The body itself must not be rejected for size -- 401 (bad
+        // token, since none of this cares about auth) proves the request
+        // body was read and passed through to the handler, not bounced
+        // by a body-limit layer (which would be 413).
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/jmap/api")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer nonexistent-token")
+            .body(Body::from(oversized))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }

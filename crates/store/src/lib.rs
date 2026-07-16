@@ -7,6 +7,7 @@ pub mod mailboxes;
 pub mod messages;
 pub mod metadata;
 pub mod threads;
+pub mod uploads;
 
 pub use blob::BlobStore;
 pub use mailboxes::{
@@ -15,3 +16,4 @@ pub use mailboxes::{
 pub use messages::{NewMessage, StoredMessage, KEYWORD_DRAFT, KEYWORD_JUNK};
 pub use metadata::MetadataStore;
 pub use threads::{normalize_subject, ThreadMatch};
+pub use uploads::{NewUpload, StoredUpload};

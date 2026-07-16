@@ -4,12 +4,12 @@
 
 use std::collections::HashMap;
 
-use mail_parser::MessageParser;
+use mail_parser::{MessageParser, MimeHeaders};
 
 use store::{BlobStore, StoredMessage};
 
 use crate::html_sanitize;
-use crate::types::{EmailAddress, EmailObject};
+use crate::types::{EmailAddress, EmailAttachment, EmailObject};
 
 const PREVIEW_LEN: usize = 200;
 
@@ -34,6 +34,33 @@ pub fn open_and_parse(
         ),
         None => (Vec::new(), Vec::new(), None, None, None),
     };
+
+    // Attachments already live inside the one sealed blob this message
+    // is -- no separate storage, just metadata pulled from the same
+    // parse. Bytes are read on demand at download time, not here.
+    let attachments = message
+        .as_ref()
+        .map(|m| {
+            m.attachments()
+                .enumerate()
+                .map(|(index, part)| EmailAttachment {
+                    blob_id: format!("m{}.{}", stored.id, index),
+                    name: part
+                        .attachment_name()
+                        .unwrap_or("attachment")
+                        .to_string(),
+                    content_type: part
+                        .content_type()
+                        .map(|ct| match &ct.c_subtype {
+                            Some(sub) => format!("{}/{sub}", ct.c_type),
+                            None => ct.c_type.to_string(),
+                        })
+                        .unwrap_or_else(|| "application/octet-stream".to_string()),
+                    size: part.contents().len() as i64,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let preview = body_text
         .as_deref()
@@ -67,6 +94,7 @@ pub fn open_and_parse(
         av_clean: stored.av_clean,
         body_html: sanitized_html.as_ref().map(|s| s.html.clone()),
         blocked_image_count: sanitized_html.as_ref().map(|s| s.blocked_image_count),
+        attachments,
     })
 }
 

@@ -81,3 +81,26 @@ async fn unreachable_endpoint_is_an_error() {
     let result = client.scan(b"x").await;
     assert!(result.is_err());
 }
+
+#[tokio::test]
+async fn scan_with_timeout_errors_instead_of_hanging_on_a_wedged_server() {
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Accepts the connection, reads nothing, replies nothing -- exactly
+    // the "clamd is up but stuck" case `scan` itself has no defense
+    // against.
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        drop(stream);
+    });
+
+    let client = ClamavClient::new(&addr.to_string()).with_timeout(Duration::from_millis(200));
+    let result = client.scan_with_timeout(b"x").await;
+    assert!(result.is_err(), "expected a timeout error, got {result:?}");
+
+    server.abort();
+}

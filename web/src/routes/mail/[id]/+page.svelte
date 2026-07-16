@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { CaretLeftIcon, StarIcon, ArchiveIcon, TrashIcon, ArrowBendUpLeftIcon, ArrowElbowDownRightIcon } from 'phosphor-svelte';
+	import { CaretLeftIcon, StarIcon, ArchiveIcon, TrashIcon, ArrowBendUpLeftIcon, ArrowElbowDownRightIcon, FileIcon, DownloadSimpleIcon } from 'phosphor-svelte';
 	import { session } from '$lib/session.svelte';
 	import {
 		getEmails,
@@ -9,6 +9,8 @@
 		moveToMailbox,
 		destroyEmail,
 		getThreadEmailIds,
+		downloadAttachment,
+		formatFileSize,
 		KEYWORD_FLAGGED,
 		KEYWORD_SEEN,
 		KEYWORD_DRAFT,
@@ -167,6 +169,21 @@
 	function addressLabel(addr: { name: string | null; email: string }) {
 		return addr.name ? `${addr.name} <${addr.email}>` : addr.email;
 	}
+
+	let downloadingBlobId = $state<string | null>(null);
+
+	async function handleDownload(blobId: string, name: string) {
+		const token = session.token;
+		if (!token || downloadingBlobId) return;
+		downloadingBlobId = blobId;
+		try {
+			await downloadAttachment(token, blobId, name);
+		} catch {
+			error = 'Could not download this attachment.';
+		} finally {
+			downloadingBlobId = null;
+		}
+	}
 </script>
 
 <div class="mx-auto flex min-h-screen max-w-4xl flex-col">
@@ -269,6 +286,30 @@
 					style="background: var(--surface); border: 1px solid var(--border); max-width: 90ch; color: var(--text); overflow-wrap: anywhere;"
 				>
 					{email.bodyText || '(no text body)'}
+				</div>
+			{/if}
+
+			{#if email.attachments.length > 0}
+				<div class="mt-4 flex flex-col gap-1.5" style="max-width: 90ch;">
+					{#each email.attachments as attachment (attachment.blobId)}
+						<button
+							onclick={() => handleDownload(attachment.blobId, attachment.name)}
+							disabled={downloadingBlobId !== null}
+							class="flex items-center gap-2.5 rounded-[var(--radius)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+							style="background: var(--surface); border: 1px solid var(--border);"
+						>
+							<FileIcon size={18} style="color: var(--text-faint); flex-shrink: 0;" />
+							<span class="min-w-0 flex-1">
+								<span class="block truncate text-sm" style="color: var(--text);">{attachment.name}</span>
+								<span class="block text-xs" style="color: var(--text-faint);">{formatFileSize(attachment.size)}</span>
+							</span>
+							{#if downloadingBlobId === attachment.blobId}
+								<span class="shrink-0 text-xs" style="color: var(--text-faint);">Downloading…</span>
+							{:else}
+								<DownloadSimpleIcon size={17} style="color: var(--text-faint); flex-shrink: 0;" />
+							{/if}
+						</button>
+					{/each}
 				</div>
 			{/if}
 

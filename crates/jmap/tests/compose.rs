@@ -99,6 +99,8 @@ async fn compose_save_draft_then_send_lands_in_sent_and_queue() {
         Arc::new(cfg),
         queue_store.clone(),
         Arc::new(common::changes::ChangeNotifier::new()),
+        None,
+        25 * 1024 * 1024,
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
@@ -264,6 +266,8 @@ async fn a_draft_reply_joins_the_original_thread() {
         Arc::new(cfg),
         queue_store,
         Arc::new(common::changes::ChangeNotifier::new()),
+        None,
+        25 * 1024 * 1024,
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),

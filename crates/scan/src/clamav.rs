@@ -3,6 +3,8 @@
 //! chunk, then read one null-terminated reply line.
 //! https://docs.clamav.net/manual/Usage/Scanning.html#instream
 
+use std::time::Duration;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::endpoint::{connect, Endpoint};
@@ -11,9 +13,16 @@ use crate::endpoint::{connect, Endpoint};
 /// small enough to keep memory bounded for very large messages.
 const CHUNK_SIZE: usize = 256 * 1024;
 
+/// `scan()` itself has no timeout (a wedged clamd that accepts the
+/// connection but never replies would hang it forever) -- `Scanner`
+/// normally supplies one via its own wrapper; `scan_with_timeout` is for
+/// callers that talk to `ClamavClient` directly, outside `Scanner`.
+const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone)]
 pub struct ClamavClient {
     endpoint: Endpoint,
+    timeout: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +35,16 @@ impl ClamavClient {
     pub fn new(endpoint: &str) -> Self {
         Self {
             endpoint: Endpoint::parse(endpoint),
+            timeout: DEFAULT_SCAN_TIMEOUT,
         }
+    }
+
+    /// Overrides the default timeout `scan_with_timeout` uses (tests use
+    /// this to avoid a slow real wait against a deliberately-wedged
+    /// listener).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     pub async fn scan(&self, raw_message: &[u8]) -> common::Result<ClamavVerdict> {
@@ -55,6 +73,16 @@ impl ClamavClient {
             line.push(byte[0]);
         }
         parse_stream_reply(&String::from_utf8_lossy(&line))
+    }
+
+    /// Same as `scan`, bounded by this client's timeout (`with_timeout`,
+    /// defaulting to `DEFAULT_SCAN_TIMEOUT`) so a wedged clamd can't hang
+    /// the caller forever.
+    pub async fn scan_with_timeout(&self, raw_message: &[u8]) -> common::Result<ClamavVerdict> {
+        match tokio::time::timeout(self.timeout, self.scan(raw_message)).await {
+            Ok(result) => result,
+            Err(_) => Err(common::Error::Network("clamd scan timed out".into())),
+        }
     }
 }
 

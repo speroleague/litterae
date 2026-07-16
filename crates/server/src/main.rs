@@ -109,6 +109,15 @@ async fn main() {
         notifier.clone(),
     );
 
+    // Separate from `scanner` above (moved into `smtp_in::run`, and built
+    // for SMTP-envelope-aware inbound scanning anyway) -- `/jmap/upload`
+    // scans a bare file with no envelope, so it talks to clamd directly.
+    let jmap_clamav = config
+        .antivirus
+        .endpoint
+        .as_deref()
+        .map(|endpoint| Arc::new(scan::clamav::ClamavClient::new(endpoint)));
+
     let jmap_state = jmap::AppState::new(
         auth_store.clone(),
         blobs.clone(),
@@ -117,6 +126,8 @@ async fn main() {
         argon2_config.clone(),
         queue_store.clone(),
         notifier.clone(),
+        jmap_clamav,
+        config.jmap.max_upload_size,
     );
     let jmap_router = jmap::build_router(jmap_state);
     let jmap_addr = config.jmap.listen_addr.clone();

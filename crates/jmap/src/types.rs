@@ -187,6 +187,19 @@ pub struct EmailObject {
     /// `null` iff `bodyHtml` is `null`.
     #[serde(rename = "blockedImageCount")]
     pub blocked_image_count: Option<u32>,
+    pub attachments: Vec<EmailAttachment>,
+}
+
+/// Metadata only -- bytes are fetched on demand via `blobId` from
+/// `GET /jmap/download/{blobId}`, never inlined here.
+#[derive(Serialize, Clone)]
+pub struct EmailAttachment {
+    #[serde(rename = "blobId")]
+    pub blob_id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub content_type: String,
+    pub size: i64,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +250,11 @@ pub struct EmailCreateRequest {
     pub body_text: Option<String>,
     #[serde(rename = "inReplyTo")]
     pub in_reply_to: Option<String>,
+    /// `blobId`s from prior `POST /jmap/upload` calls (the `u{id}` form --
+    /// referencing an existing message's attachment here isn't supported,
+    /// only fresh uploads).
+    #[serde(default, rename = "attachmentBlobIds")]
+    pub attachment_blob_ids: Vec<String>,
 }
 
 #[derive(Deserialize, Clone)]

@@ -187,12 +187,25 @@ pub fn open_message(
     stored: &StoredMessage,
     account_priv: &[u8; crypto::hpke_seal::PRIVATE_KEY_LEN],
 ) -> Result<Vec<u8>> {
-    let dek = hpke_open(account_priv, DEK_SEAL_INFO, &stored.dek_wrap)
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+    open_blob(blobs, &stored.blob_hash, &stored.dek_wrap, account_priv)
+}
+
+/// The `seal_for_account`/`open_message` pair, generalized to any sealed
+/// blob (messages, but also `store::uploads` rows, which share the same
+/// blob_hash+dek_wrap shape) rather than only ones with a full
+/// `StoredMessage` row.
+pub fn open_blob(
+    blobs: &BlobStore,
+    blob_hash: &str,
+    dek_wrap: &[u8],
+    account_priv: &[u8; crypto::hpke_seal::PRIVATE_KEY_LEN],
+) -> Result<Vec<u8>> {
+    let dek =
+        hpke_open(account_priv, DEK_SEAL_INFO, dek_wrap).map_err(|e| Error::Crypto(e.to_string()))?;
     let mut dek_bytes = [0u8; 32];
     dek_bytes.copy_from_slice(&dek);
 
-    let sealed_blob = blobs.read(&stored.blob_hash)?;
+    let sealed_blob = blobs.read(blob_hash)?;
     let plaintext =
         aead_open(&dek_bytes, &sealed_blob).map_err(|e| Error::Crypto(e.to_string()))?;
     Ok(plaintext.to_vec())

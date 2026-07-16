@@ -7,15 +7,19 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use axum::extract::{ConnectInfo, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::body::Bytes;
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
+use axum::response::IntoResponse;
 use axum::Json;
 use futures_util::stream::{self, Stream};
+use mail_parser::{MessageParser, MimeHeaders};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::api::{dispatch, AccountContext};
+use crate::api::{dispatch, now_unix, AccountContext};
+use crate::content_disposition::attachment_header;
 use crate::session_store::SessionIdentity;
 use crate::types::{JmapAccount, JmapSession, Request, Response, CAPABILITY_CORE, CAPABILITY_MAIL};
 use crate::AppState;
@@ -198,6 +202,7 @@ pub async fn jmap_api(
                     key_id: identity.key_id,
                     address: &identity.address,
                     amk,
+                    max_upload_size: state.max_upload_size,
                     search: &search_fn,
                     notifier: &state.notifier,
                 };
@@ -287,4 +292,176 @@ pub async fn sse(
         }
     });
     Ok(Sse::new(stream))
+}
+
+/// Resolves a blobId to (filename, content_type, plaintext bytes),
+/// enforcing account ownership. Returns `None` for "doesn't exist" *and*
+/// "exists but isn't yours" alike -- the caller must map both to the same
+/// 404, never a distinguishable 403 that would confirm something exists.
+fn resolve_blob(
+    state: &AppState,
+    account_id: i64,
+    account_priv: &[u8; crypto::hpke_seal::PRIVATE_KEY_LEN],
+    blob_id: &str,
+) -> Option<(String, String, Vec<u8>)> {
+    if let Some(rest) = blob_id.strip_prefix('m') {
+        let (message_id, index) = rest.split_once('.')?;
+        let message_id: i64 = message_id.parse().ok()?;
+        let index: usize = index.parse().ok()?;
+
+        let stored = state.metadata.get_message(message_id).ok().flatten()?;
+        if stored.account_id != account_id {
+            return None;
+        }
+        let raw = delivery::open_message(&state.blobs, &stored, account_priv).ok()?;
+        let message = MessageParser::default().parse(&raw)?;
+        let part = message.attachments().nth(index)?;
+        let filename = part
+            .attachment_name()
+            .unwrap_or("attachment")
+            .to_string();
+        let content_type = part
+            .content_type()
+            .map(|ct| match &ct.c_subtype {
+                Some(sub) => format!("{}/{sub}", ct.c_type),
+                None => ct.c_type.to_string(),
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        Some((filename, content_type, part.contents().to_vec()))
+    } else if let Some(rest) = blob_id.strip_prefix('u') {
+        let upload_id: i64 = rest.parse().ok()?;
+
+        let stored = state.metadata.get_upload(upload_id).ok().flatten()?;
+        if stored.account_id != account_id {
+            return None;
+        }
+        let bytes = delivery::open_blob(
+            &state.blobs,
+            &stored.blob_hash,
+            &stored.dek_wrap,
+            account_priv,
+        )
+        .ok()?;
+        Some((stored.filename, stored.content_type, bytes))
+    } else {
+        None
+    }
+}
+
+pub async fn download(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(blob_id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let resolved = state
+        .sessions
+        .with_account(token, |account_id, account_priv| {
+            resolve_blob(&state, account_id, account_priv, &blob_id)
+        })
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let (filename, content_type, bytes) = resolved.ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (
+                header::CONTENT_DISPOSITION,
+                attachment_header(&filename),
+            ),
+            (
+                header::HeaderName::from_static("x-content-type-options"),
+                "nosniff".to_string(),
+            ),
+        ],
+        bytes,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct UploadQuery {
+    filename: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct UploadResponse {
+    #[serde(rename = "accountId")]
+    account_id: String,
+    #[serde(rename = "blobId")]
+    blob_id: String,
+    #[serde(rename = "type")]
+    content_type: String,
+    size: i64,
+}
+
+pub async fn upload(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<UploadQuery>,
+    body: Bytes,
+) -> Result<Json<UploadResponse>, StatusCode> {
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let filename = query.filename.unwrap_or_else(|| "attachment".to_string());
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    if !common::input::valid_header_value(&filename) || !common::input::valid_header_value(&content_type) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // ClamAV can't scan ciphertext, so this must run before sealing --
+    // never reorder. Fails closed (unlike inbound mail's fail-open
+    // policy): this is a single retryable interactive action, not mail
+    // that has to keep flowing for availability reasons.
+    if let Some(clamav) = &state.clamav {
+        match clamav.scan_with_timeout(&body).await {
+            Ok(scan::clamav::ClamavVerdict::Clean) => {}
+            Ok(scan::clamav::ClamavVerdict::Found(_)) => {
+                return Err(StatusCode::UNPROCESSABLE_ENTITY)
+            }
+            Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE),
+        }
+    }
+
+    let size = body.len() as i64;
+    let result = state.sessions.with_session(
+        token,
+        |account_id, _account_priv, _search_index, identity, _amk| -> Result<UploadResponse, StatusCode> {
+            let (blob_hash, dek_wrap) = delivery::seal_for_account(
+                &state.blobs,
+                &identity.account_pub,
+                identity.key_id,
+                &body,
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let upload_id = state
+                .metadata
+                .insert_upload(&store::NewUpload {
+                    account_id,
+                    blob_hash: &blob_hash,
+                    dek_wrap: &dek_wrap,
+                    key_id: identity.key_id,
+                    filename: &filename,
+                    content_type: &content_type,
+                    size_bytes: size,
+                    created_at: now_unix(),
+                })
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            Ok(UploadResponse {
+                account_id: account_id.to_string(),
+                blob_id: format!("u{upload_id}"),
+                content_type: content_type.clone(),
+                size,
+            })
+        },
+    );
+
+    match result {
+        Some(Ok(resp)) => Ok(Json(resp)),
+        Some(Err(status)) => Err(status),
+        None => Err(StatusCode::UNAUTHORIZED),
+    }
 }

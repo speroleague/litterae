@@ -46,6 +46,20 @@ export interface EmailObject {
 	bodyHtml: string | null;
 	/** Remote images stripped pending explicit reveal; null iff bodyHtml is null. */
 	blockedImageCount: number | null;
+	attachments: EmailAttachment[];
+}
+
+export interface EmailAttachment {
+	blobId: string;
+	name: string;
+	type: string;
+	size: number;
+}
+
+export function formatFileSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export interface MailboxObject {
@@ -233,6 +247,8 @@ export interface ComposeInput {
 	bodyText?: string;
 	/** JMAP id ("m123") of the message being replied to, if any. */
 	inReplyTo?: string;
+	/** `blobId`s from prior `uploadAttachment` calls. */
+	attachmentBlobIds?: string[];
 }
 
 export class JmapSetError extends JmapError {
@@ -332,6 +348,58 @@ export async function setIdentitySignature(
 	await callApi(token, [
 		['Identity/set', { accountId, update: { [identityId]: { textSignature } } }, 'c1']
 	]);
+}
+
+export interface UploadedBlob {
+	accountId: string;
+	blobId: string;
+	type: string;
+	size: number;
+}
+
+/** Uploads a file for a not-yet-sent draft attachment. Raw body (the
+ * file's own bytes, `Content-Type` set to its own MIME type) rather than
+ * `multipart/form-data`, matching JMAP's binary upload semantics. The
+ * returned `blobId` (a `u{id}` reference) is passed to `saveDraft`/
+ * `updateDraft` via `ComposeInput.attachmentBlobIds` -- uploading alone
+ * doesn't attach it to anything yet. */
+export async function uploadAttachment(token: string, file: File): Promise<UploadedBlob> {
+	return request(
+		`/jmap/upload?filename=${encodeURIComponent(file.name)}`,
+		{
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${token}`,
+				'content-type': file.type || 'application/octet-stream'
+			},
+			body: file
+		},
+		true
+	);
+}
+
+/** Downloads an attachment (`m{id}.{index}` from a received message, or
+ * `u{id}` from a pending upload) and saves it via a throwaway object URL.
+ * Deliberately never a bare `<a href>` straight at the JMAP endpoint --
+ * that would need the bearer token to ride along in the URL, which
+ * `fetch()` avoids by setting it as a header instead. */
+export async function downloadAttachment(token: string, blobId: string, filename: string): Promise<void> {
+	const res = await fetch(`${JMAP_URL}/jmap/download/${encodeURIComponent(blobId)}`, {
+		headers: { authorization: `Bearer ${token}` }
+	});
+	if (res.status === 401) {
+		onUnauthorized?.();
+	}
+	if (!res.ok) {
+		throw new JmapError(`download failed: ${res.status}`);
+	}
+	const blob = await res.blob();
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = filename;
+	a.click();
+	setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 /**

@@ -40,6 +40,10 @@ pub struct AccountContext<'a> {
     /// HPKE-sealed to `account_pub` -- symmetric under the account's own
     /// AMK instead, same as `wrapped_account_priv`.
     pub amk: &'a crypto::AccountMasterKey,
+    /// Caps an assembled outbound message's total size (body + decoded
+    /// attachments), checked in `create_draft` right after `compose::build`
+    /// -- the only place that number is known.
+    pub max_upload_size: usize,
     /// Runs a full-text query against this session's search index
     /// (building it on first use), returning matching message row ids.
     pub search: &'a dyn Fn(&str) -> common::Result<Vec<i64>>,
@@ -406,7 +410,7 @@ fn email_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
     )
 }
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -420,6 +424,45 @@ fn now_unix() -> i64 {
 /// is stored identically to a received one, just with placeholder envelope
 /// fields (`mail_from`/`remote_ip`/auth verdicts) since there was no real
 /// SMTP transaction.
+/// Resolves `u{id}` upload blobIds referenced by a compose request into
+/// decrypted attachment bytes. Ownership-checked the same way every other
+/// cross-table lookup in this file is: "doesn't exist" and "belongs to a
+/// different account" both just fail the whole create, no distinction
+/// visible to the caller.
+fn resolve_attachments(
+    ctx: &AccountContext,
+    account_id: i64,
+    blob_ids: &[String],
+) -> Result<Vec<compose::Attachment>, String> {
+    blob_ids
+        .iter()
+        .map(|blob_id| {
+            let upload_id = blob_id
+                .strip_prefix('u')
+                .and_then(|rest| rest.parse::<i64>().ok())
+                .ok_or_else(|| format!("invalid attachment blobId: {blob_id}"))?;
+            let stored = ctx
+                .metadata
+                .get_upload(upload_id)
+                .map_err(|e| e.to_string())?
+                .filter(|u| u.account_id == account_id)
+                .ok_or_else(|| format!("no such attachment: {blob_id}"))?;
+            let bytes = delivery::open_blob(
+                ctx.blobs,
+                &stored.blob_hash,
+                &stored.dek_wrap,
+                ctx.account_priv,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(compose::Attachment {
+                filename: stored.filename,
+                content_type: stored.content_type,
+                bytes,
+            })
+        })
+        .collect()
+}
+
 fn create_draft(
     ctx: &AccountContext,
     account_id: i64,
@@ -492,6 +535,8 @@ fn create_draft(
             .map_err(|e| e.to_string())?,
     };
 
+    let attachments = resolve_attachments(ctx, account_id, &req.attachment_blob_ids)?;
+
     let raw = compose::build(
         ctx.address,
         &req.to,
@@ -501,7 +546,11 @@ fn create_draft(
         in_reply_to_header.as_deref(),
         references_header.as_deref(),
         now,
+        &attachments,
     )?;
+    if raw.bytes.len() > ctx.max_upload_size {
+        return Err("message exceeds the maximum allowed size".to_string());
+    }
 
     let (blob_hash, dek_wrap) =
         delivery::seal_for_account(ctx.blobs, ctx.account_pub, ctx.key_id, &raw.bytes)

@@ -2,6 +2,15 @@
 // and "resume editing" (clicking a Drafts row) can all open the same
 // compose overlay without threading props through every route.
 
+export interface PendingAttachment {
+	/** A `u{id}` blobId from `uploadAttachment` -- the only shape a
+	 * compose request accepts (referencing an existing message's own
+	 * attachment isn't supported, only fresh uploads). */
+	blobId: string;
+	name: string;
+	size: number;
+}
+
 class ComposeState {
 	open = $state(false);
 	/** Set only when resuming an existing draft -- Send/Save Draft then
@@ -14,6 +23,7 @@ class ComposeState {
 	cc = $state('');
 	subject = $state('');
 	bodyText = $state('');
+	attachments = $state<PendingAttachment[]>([]);
 }
 
 export const composeState = new ComposeState();
@@ -39,6 +49,15 @@ function reset() {
 	composeState.cc = '';
 	composeState.subject = '';
 	composeState.bodyText = '';
+	composeState.attachments = [];
+}
+
+export function addAttachment(attachment: PendingAttachment) {
+	composeState.attachments = [...composeState.attachments, attachment];
+}
+
+export function removeAttachment(blobId: string) {
+	composeState.attachments = composeState.attachments.filter((a) => a.blobId !== blobId);
 }
 
 export function openNewMessage() {

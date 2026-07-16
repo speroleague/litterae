@@ -71,10 +71,20 @@ pub struct JmapConfig {
     pub listen_addr: String,
     pub tls_cert_path: Option<PathBuf>,
     pub tls_key_path: Option<PathBuf>,
+    /// Caps a single `/jmap/upload` body and the total size of a composed
+    /// outbound message's attachments. Defaults to the same value as
+    /// `smtp.max_message_size` since that's what ultimately bounds the
+    /// assembled message anyway; independent config keys (not literally
+    /// shared) so changing one doesn't silently change the other.
+    #[serde(default = "default_max_upload_size")]
+    pub max_upload_size: usize,
 }
 
 fn default_jmap_listen_addr() -> String {
     "127.0.0.1:8620".to_string()
+}
+fn default_max_upload_size() -> usize {
+    25 * 1024 * 1024
 }
 
 impl Default for JmapConfig {
@@ -83,6 +93,7 @@ impl Default for JmapConfig {
             listen_addr: default_jmap_listen_addr(),
             tls_cert_path: None,
             tls_key_path: None,
+            max_upload_size: default_max_upload_size(),
         }
     }
 }

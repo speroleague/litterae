@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod compose;
+pub mod compose_html;
 pub mod content_disposition;
 pub mod email;
 pub mod html_sanitize;

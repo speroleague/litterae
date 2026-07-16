@@ -22,7 +22,7 @@ class ComposeState {
 	to = $state('');
 	cc = $state('');
 	subject = $state('');
-	bodyText = $state('');
+	bodyHtml = $state('');
 	attachments = $state<PendingAttachment[]>([]);
 }
 
@@ -38,8 +38,18 @@ export function setSignature(text: string) {
 	identityState.signature = text;
 }
 
-function signatureBlock(): string {
-	return identityState.signature.trim() ? `\n\n-- \n${identityState.signature}` : '';
+function escapeHtml(text: string): string {
+	return text
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;');
+}
+
+function signatureBlockHtml(): string {
+	const signature = identityState.signature.trim();
+	if (!signature) return '';
+	const lines = escapeHtml(signature).split('\n').join('<br>');
+	return `<p>-- </p><p>${lines}</p>`;
 }
 
 function reset() {
@@ -48,7 +58,7 @@ function reset() {
 	composeState.to = '';
 	composeState.cc = '';
 	composeState.subject = '';
-	composeState.bodyText = '';
+	composeState.bodyHtml = '';
 	composeState.attachments = [];
 }
 
@@ -62,7 +72,7 @@ export function removeAttachment(blobId: string) {
 
 export function openNewMessage() {
 	reset();
-	composeState.bodyText = signatureBlock();
+	composeState.bodyHtml = signatureBlockHtml();
 	composeState.open = true;
 }
 
@@ -71,17 +81,27 @@ export function openReply(opts: { to: string; subject: string; inReplyTo: string
 	composeState.to = opts.to;
 	composeState.subject = opts.subject.toLowerCase().startsWith('re:') ? opts.subject : `Re: ${opts.subject}`;
 	composeState.inReplyTo = opts.inReplyTo;
-	composeState.bodyText = signatureBlock();
+	composeState.bodyHtml = signatureBlockHtml();
 	composeState.open = true;
 }
 
-export function openDraft(opts: { draftId: string; to: string; cc: string; subject: string; bodyText: string }) {
+/** `bodyHtml` is what every draft saved by this editor carries; the
+ * `bodyText` fallback is only for resuming a draft saved before rich
+ * text existed (or created via a bare API call with no HTML part). */
+export function openDraft(opts: {
+	draftId: string;
+	to: string;
+	cc: string;
+	subject: string;
+	bodyHtml: string;
+	bodyText: string;
+}) {
 	reset();
 	composeState.draftId = opts.draftId;
 	composeState.to = opts.to;
 	composeState.cc = opts.cc;
 	composeState.subject = opts.subject;
-	composeState.bodyText = opts.bodyText;
+	composeState.bodyHtml = opts.bodyHtml || (opts.bodyText ? `<p>${escapeHtml(opts.bodyText).split('\n').join('</p><p>')}</p>` : '');
 	composeState.open = true;
 }
 

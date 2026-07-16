@@ -8,7 +8,7 @@ use mail_parser::{MessageParser, MimeHeaders};
 
 use store::{BlobStore, StoredMessage};
 
-use crate::html_sanitize;
+use crate::html_sanitize::{self, CidImages, ALLOWED_CID_IMAGE_TYPES};
 use crate::types::{EmailAddress, EmailAttachment, EmailObject};
 
 const PREVIEW_LEN: usize = 200;
@@ -21,6 +21,38 @@ pub fn open_and_parse(
     let raw = delivery::open_message(blobs, stored, account_priv)?;
     let message = MessageParser::default().parse(&raw);
 
+    // Attachments already live inside the one sealed blob this message
+    // is -- no separate storage, just metadata pulled from the same
+    // parse. Bytes are read on demand at download time (regular
+    // downloads), except inline images, whose bytes are needed right
+    // here to resolve `cid:` references in the HTML body below -- both
+    // built from one enumeration pass, not two.
+    let mut attachments = Vec::new();
+    let mut cid_images: CidImages = HashMap::new();
+    if let Some(m) = &message {
+        for (index, part) in m.attachments().enumerate() {
+            let content_type = part
+                .content_type()
+                .map(|ct| match &ct.c_subtype {
+                    Some(sub) => format!("{}/{sub}", ct.c_type),
+                    None => ct.c_type.to_string(),
+                })
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let contents = part.contents();
+            attachments.push(EmailAttachment {
+                blob_id: format!("m{}.{}", stored.id, index),
+                name: part.attachment_name().unwrap_or("attachment").to_string(),
+                content_type: content_type.clone(),
+                size: contents.len() as i64,
+            });
+            if let Some(cid) = part.content_id() {
+                if ALLOWED_CID_IMAGE_TYPES.contains(&content_type.as_str()) {
+                    cid_images.insert(cid.to_string(), (content_type, contents.to_vec()));
+                }
+            }
+        }
+    }
+
     let (from, to, subject, body_text, sanitized_html) = match &message {
         Some(m) => (
             addresses(m.from()),
@@ -30,37 +62,10 @@ pub fn open_and_parse(
             (m.html_body_count() > 0)
                 .then(|| m.body_html(0))
                 .flatten()
-                .map(|html| html_sanitize::sanitize(&html)),
+                .map(|html| html_sanitize::sanitize(&html, &cid_images)),
         ),
         None => (Vec::new(), Vec::new(), None, None, None),
     };
-
-    // Attachments already live inside the one sealed blob this message
-    // is -- no separate storage, just metadata pulled from the same
-    // parse. Bytes are read on demand at download time, not here.
-    let attachments = message
-        .as_ref()
-        .map(|m| {
-            m.attachments()
-                .enumerate()
-                .map(|(index, part)| EmailAttachment {
-                    blob_id: format!("m{}.{}", stored.id, index),
-                    name: part
-                        .attachment_name()
-                        .unwrap_or("attachment")
-                        .to_string(),
-                    content_type: part
-                        .content_type()
-                        .map(|ct| match &ct.c_subtype {
-                            Some(sub) => format!("{}/{sub}", ct.c_type),
-                            None => ct.c_type.to_string(),
-                        })
-                        .unwrap_or_else(|| "application/octet-stream".to_string()),
-                    size: part.contents().len() as i64,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
 
     let preview = body_text
         .as_deref()

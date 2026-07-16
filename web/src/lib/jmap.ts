@@ -244,7 +244,10 @@ export interface ComposeInput {
 	cc?: ComposeAddress[];
 	bcc?: ComposeAddress[];
 	subject?: string;
-	bodyText?: string;
+	/** Raw editor HTML -- sanitized server-side before it's ever signed/
+	 * queued/stored; the text/plain part is always derived from this on
+	 * the server, never sent separately. */
+	bodyHtml?: string;
 	/** JMAP id ("m123") of the message being replied to, if any. */
 	inReplyTo?: string;
 	/** `blobId`s from prior `uploadAttachment` calls. */

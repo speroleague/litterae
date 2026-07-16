@@ -232,7 +232,8 @@ pub struct EmailSetResult {
 }
 
 /// Client-supplied compose body (a deliberately small subset of RFC 8621's
-/// full Email create shape -- plain text only, one From, no attachments).
+/// full Email create shape -- one From, `u{id}` upload references for
+/// attachments/inline images, no arbitrary custom MIME structure).
 /// `inReplyTo` is our own "m123" id of the message being replied to, not a
 /// raw Message-ID header value -- lets the server pull References/thread
 /// linkage from a row it already has instead of trusting client-echoed
@@ -246,13 +247,27 @@ pub struct EmailCreateRequest {
     #[serde(default)]
     pub bcc: Vec<EmailAddressIn>,
     pub subject: Option<String>,
+    /// Ignored when `body_html` is present -- the plain-text part is
+    /// then always derived server-side from the sanitized HTML (see
+    /// `compose_html::html_to_text`), so it can never drift out of sync
+    /// with what was actually sent. Only used verbatim (after the usual
+    /// header-value validation) when there's no HTML body at all.
     #[serde(rename = "bodyText")]
     pub body_text: Option<String>,
+    /// Raw, untrusted compose-editor HTML -- sanitized server-side via
+    /// `compose_html::sanitize_outbound` before it's ever signed/
+    /// queued/stored. Never assume this is already safe just because it
+    /// came from this account's own session; anyone can call
+    /// `/jmap/api` directly with hand-crafted markup.
+    #[serde(rename = "bodyHtml")]
+    pub body_html: Option<String>,
     #[serde(rename = "inReplyTo")]
     pub in_reply_to: Option<String>,
     /// `blobId`s from prior `POST /jmap/upload` calls (the `u{id}` form --
     /// referencing an existing message's attachment here isn't supported,
-    /// only fresh uploads).
+    /// only fresh uploads). Uploads also referenced inline via
+    /// `cid:u{id}` in `body_html` are resolved separately and don't need
+    /// to be listed here too.
     #[serde(default, rename = "attachmentBlobIds")]
     pub attachment_blob_ids: Vec<String>,
 }

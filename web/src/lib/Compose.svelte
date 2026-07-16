@@ -5,6 +5,7 @@
 	import { saveDraft, updateDraft, submitEmail, sendNewEmail, uploadAttachment, formatFileSize, JmapError, type ComposeInput } from '$lib/jmap';
 	import { composeState, closeCompose, parseAddressList, addAttachment, removeAttachment } from '$lib/composeState.svelte';
 	import { bumpRefresh, refreshMailboxes } from '$lib/mailNav.svelte';
+	import RichTextEditor from './RichTextEditor.svelte';
 
 	let ccOpen = $state(false);
 	let sending = $state(false);
@@ -44,7 +45,7 @@
 			to: parseAddressList(composeState.to),
 			cc: parseAddressList(composeState.cc),
 			subject: composeState.subject.trim() || undefined,
-			bodyText: composeState.bodyText,
+			bodyHtml: composeState.bodyHtml,
 			inReplyTo: composeState.draftId ? undefined : (composeState.inReplyTo ?? undefined),
 			attachmentBlobIds: composeState.attachments.map((a) => a.blobId)
 		};
@@ -178,12 +179,7 @@
 						style="color: var(--text);"
 					/>
 				</div>
-				<textarea
-					placeholder="Write your message…"
-					bind:value={composeState.bodyText}
-					class="min-h-[320px] flex-1 resize-none bg-transparent px-4 py-3 text-[15px] leading-relaxed outline-none"
-					style="color: var(--text);"
-				></textarea>
+				<RichTextEditor bind:html={composeState.bodyHtml} />
 
 				{#if composeState.attachments.length > 0 || uploadingCount > 0}
 					<div class="flex flex-wrap gap-2 px-4 pb-3">

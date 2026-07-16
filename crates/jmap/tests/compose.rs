@@ -323,3 +323,130 @@ async fn a_draft_reply_joins_the_original_thread() {
         .unwrap();
     assert_eq!(reply_thread, original_thread);
 }
+
+#[tokio::test]
+async fn body_html_is_sanitized_and_inline_image_round_trips_and_is_account_scoped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::open(tmp.path()).unwrap());
+    let metadata = Arc::new(MetadataStore::open_in_memory().unwrap());
+    let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
+    let queue_store = Arc::new(queue::QueueStore::open_in_memory().unwrap());
+    let cfg = fast_argon2();
+    auth_store
+        .provision("alice", "example.test", b"correct horse battery staple", &cfg)
+        .unwrap();
+    auth_store
+        .provision("bob", "example.test", b"another horse battery staple", &cfg)
+        .unwrap();
+
+    let state = AppState::new(
+        auth_store,
+        blobs,
+        metadata,
+        Arc::new(audit::AuditStore::open_in_memory().unwrap()),
+        Arc::new(cfg),
+        queue_store,
+        Arc::new(common::changes::ChangeNotifier::new()),
+        None,
+        25 * 1024 * 1024,
+    );
+    let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+    ));
+
+    let (alice_token, alice_account_id) = unlock(
+        &app,
+        "alice",
+        "example.test",
+        "correct horse battery staple",
+    )
+    .await;
+
+    // Alice uploads an inline image.
+    let png_bytes = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+    let req = Request::builder()
+        .method("POST")
+        .uri("/jmap/upload?filename=pic.png")
+        .header("content-type", "image/png")
+        .header("authorization", format!("Bearer {alice_token}"))
+        .body(Body::from(png_bytes.clone()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let upload_blob_id = json_body(resp).await["blobId"].as_str().unwrap().to_string();
+
+    // A compose body exercising allowed formatting, a disallowed color,
+    // a script-injection attempt, and the inline image.
+    let body_html = format!(
+        r#"<h1>Title</h1><p>Hello <b>world</b>, <span style="color: #d92626">warning</span> <span style="color: #ff00ff">bad</span></p><ul><li>one</li><li>two</li></ul><a href="https://example.com">link</a><script>alert(1)</script><img src="cid:{upload_blob_id}">"#
+    );
+
+    let result = jmap_call(
+        &app,
+        &alice_token,
+        "Email/set",
+        serde_json::json!({
+            "accountId": alice_account_id,
+            "create": { "draft1": { "to": [{ "email": "bob@example.net" }], "subject": "Rich", "bodyHtml": body_html } }
+        }),
+    )
+    .await;
+    let email_id = result["created"]["draft1"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected created draft, got {result:?}"))
+        .to_string();
+
+    let get_result = jmap_call(
+        &app,
+        &alice_token,
+        "Email/get",
+        serde_json::json!({ "accountId": alice_account_id, "ids": [email_id] }),
+    )
+    .await;
+    let email = &get_result["list"][0];
+    let html = email["bodyHtml"].as_str().unwrap();
+    let text = email["bodyText"].as_str().unwrap();
+
+    assert!(html.contains("<h1>Title</h1>"));
+    assert!(html.contains("<b>world</b>"));
+    assert!(html.contains("<li>one</li>"));
+    assert!(html.contains(r#"style="color: #d92626""#));
+    assert!(!html.contains("#ff00ff"));
+    assert!(!html.contains("script"));
+    assert!(!html.contains("alert"));
+    assert!(html.contains("data:image/png;base64,"));
+    assert!(!html.contains("cid:"));
+
+    assert!(text.contains("Title"));
+    assert!(text.contains("world"));
+    assert!(text.contains("- one"));
+    assert!(text.contains("- two"));
+    assert!(!text.contains('<'));
+
+    // Bob referencing alice's upload as a cid in his own draft must not
+    // resolve -- same ownership check the regular attachment path
+    // already enforces, so the whole create fails rather than silently
+    // dropping the image.
+    let (bob_token, bob_account_id) = unlock(
+        &app,
+        "bob",
+        "example.test",
+        "another horse battery staple",
+    )
+    .await;
+    let cross_account_html = format!(r#"<p>stolen <img src="cid:{upload_blob_id}"></p>"#);
+    let bob_result = jmap_call(
+        &app,
+        &bob_token,
+        "Email/set",
+        serde_json::json!({
+            "accountId": bob_account_id,
+            "create": { "draft1": { "to": [{ "email": "carol@example.net" }], "subject": "x", "bodyHtml": cross_account_html } }
+        }),
+    )
+    .await;
+    assert!(
+        bob_result["notCreated"]["draft1"].is_object(),
+        "expected the cross-account cid reference to fail creation, got {bob_result:?}"
+    );
+}

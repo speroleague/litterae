@@ -1381,6 +1381,7 @@ dependencies = [
  "audit",
  "auth",
  "axum",
+ "base64",
  "common",
  "crypto",
  "delivery",

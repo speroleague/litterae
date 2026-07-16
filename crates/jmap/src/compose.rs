@@ -38,6 +38,18 @@ pub struct Attachment {
     pub bytes: Vec<u8>,
 }
 
+/// An inline (`cid:`-referenced) image, already resolved from a
+/// `POST /jmap/upload` blobId by the caller (`crates/jmap/src/api.rs`).
+/// `content_id` is the bare (unbracketed) id referenced from the
+/// sanitized HTML's `cid:` src -- `mail_builder`'s `.inline()` brackets
+/// it itself when writing the `Content-ID` header, same bracket
+/// convention as `Message-ID`.
+pub struct InlineImage {
+    pub content_id: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     from_address: &str,
@@ -45,10 +57,12 @@ pub fn build(
     cc: &[EmailAddressIn],
     subject: Option<&str>,
     body_text: Option<&str>,
+    body_html: Option<&str>,
     in_reply_to_header: Option<&str>,
     references_header: Option<&str>,
     sent_at: i64,
     attachments: &[Attachment],
+    inline_images: &[InlineImage],
 ) -> Result<RawMessage, String> {
     if !common::input::valid_email_address(from_address)
         || subject.is_some_and(|value| !common::input::valid_header_value(value))
@@ -65,6 +79,10 @@ pub fn build(
             !common::input::valid_header_value(&a.filename)
                 || !common::input::valid_header_value(&a.content_type)
         })
+        || inline_images.iter().any(|img| {
+            !common::input::valid_header_value(&img.content_id)
+                || !common::input::valid_header_value(&img.content_type)
+        })
     {
         return Err("invalid message header value".to_string());
     }
@@ -78,6 +96,9 @@ pub fn build(
         .subject(subject.unwrap_or(""))
         .text_body(body_text.unwrap_or(""));
 
+    if let Some(html) = body_html {
+        builder = builder.html_body(html.to_string());
+    }
     if !to.is_empty() {
         builder = builder.to(to_address_list(to));
     }
@@ -95,6 +116,13 @@ pub fn build(
             attachment.content_type.clone(),
             attachment.filename.clone(),
             attachment.bytes.clone(),
+        );
+    }
+    for inline_image in inline_images {
+        builder = builder.inline(
+            inline_image.content_type.clone(),
+            inline_image.content_id.clone(),
+            inline_image.bytes.clone(),
         );
     }
 
@@ -168,7 +196,9 @@ mod tests {
             Some("hi there"),
             None,
             None,
+            None,
             1_700_000_000,
+            &[],
             &[],
         )
         .unwrap();
@@ -192,7 +222,9 @@ mod tests {
             None,
             None,
             None,
+            None,
             0,
+            &[],
             &[],
         )
         .unwrap();
@@ -217,7 +249,9 @@ mod tests {
             None,
             None,
             None,
+            None,
             0,
+            &[],
             &[],
         )
         .is_err());
@@ -233,11 +267,35 @@ mod tests {
             None,
             None,
             None,
+            None,
             0,
             &[Attachment {
                 filename: "innocuous.txt\r\nBcc: victim@example.net".to_string(),
                 content_type: "text/plain".to_string(),
                 bytes: b"hi".to_vec(),
+            }],
+            &[],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_header_injection_in_inline_image_content_id() {
+        assert!(build(
+            "alice@example.test",
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+            &[],
+            &[InlineImage {
+                content_id: "u1\r\nBcc: victim@example.net".to_string(),
+                content_type: "image/png".to_string(),
+                bytes: vec![1, 2, 3],
             }],
         )
         .is_err());
@@ -253,12 +311,14 @@ mod tests {
             Some("body"),
             None,
             None,
+            None,
             0,
             &[Attachment {
                 filename: "invoice.pdf".to_string(),
                 content_type: "application/pdf".to_string(),
                 bytes: b"%PDF-1.4 fake".to_vec(),
             }],
+            &[],
         )
         .unwrap();
         let text = String::from_utf8_lossy(&msg.bytes);
@@ -269,6 +329,61 @@ mod tests {
     }
 
     #[test]
+    fn html_and_attachment_nest_as_multipart_alternative_inside_mixed() {
+        let msg = build(
+            "alice@example.test",
+            &[],
+            &[],
+            None,
+            Some("plain body"),
+            Some("<p>html body</p>"),
+            None,
+            None,
+            0,
+            &[Attachment {
+                filename: "invoice.pdf".to_string(),
+                content_type: "application/pdf".to_string(),
+                bytes: b"%PDF-1.4 fake".to_vec(),
+            }],
+            &[],
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&msg.bytes);
+        assert!(text.contains("multipart/alternative"));
+        assert!(text.contains("multipart/mixed"));
+        assert!(text.contains("Content-Type: text/plain"));
+        assert!(text.contains("Content-Type: text/html"));
+        assert!(text.contains("Content-Type: application/pdf"));
+    }
+
+    #[test]
+    fn inline_image_gets_bracketed_content_id_and_inline_disposition() {
+        let msg = build(
+            "alice@example.test",
+            &[],
+            &[],
+            None,
+            Some("see the image"),
+            Some(r#"<p>see <img src="cid:u5"></p>"#),
+            None,
+            None,
+            0,
+            &[],
+            &[InlineImage {
+                content_id: "u5".to_string(),
+                content_type: "image/png".to_string(),
+                bytes: vec![0x89, b'P', b'N', b'G'],
+            }],
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&msg.bytes);
+        assert!(text.contains("Content-ID: <u5>"));
+        assert!(text.contains("Content-Disposition: inline"));
+        assert!(text.contains("cid:u5"));
+        assert!(!text.contains("Content-Disposition: attachment"));
+    }
+
+    #[test]
     fn in_reply_to_and_references_are_not_double_bracketed() {
         let msg = build(
             "alice@example.test",
@@ -276,9 +391,11 @@ mod tests {
             &[],
             None,
             None,
+            None,
             Some("<parent@example.net>"),
             Some("<a@example.net> <parent@example.net>"),
             0,
+            &[],
             &[],
         )
         .unwrap();

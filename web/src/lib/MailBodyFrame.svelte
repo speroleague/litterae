@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { ImageIcon } from 'phosphor-svelte';
 	import { buildSrcdoc } from './mailBodyFrame';
+	import { themeState } from './theme.svelte';
 	import LinkConfirmDialog from './LinkConfirmDialog.svelte';
 
 	let { bodyHtml, blockedImageCount }: { bodyHtml: string; blockedImageCount: number } = $props();
@@ -11,7 +12,7 @@
 	let linkDialogOpen = $state(false);
 	let pendingHref = $state<string | null>(null);
 
-	let srcdoc = $derived(buildSrcdoc(bodyHtml));
+	let srcdoc = $derived(buildSrcdoc(bodyHtml, themeState.mode));
 
 	// No `allow-same-origin` -- the iframe gets an opaque origin with no
 	// reachable cookies/storage, and this listener is the only bridge back

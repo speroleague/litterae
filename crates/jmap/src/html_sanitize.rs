@@ -19,10 +19,14 @@
 //! own `Document::to_dom_node` which is cfg-gated as unstable):
 //! - `img[src]`: `data:` URIs pass through untouched (no network call).
 //!   `http(s)://` gets its `src` moved to `data-blocked-src` and counted
-//!   (the frontend reveals it only on explicit user action). Anything
-//!   else (`cid:`, relative, unparseable) is dropped outright -- `cid:`
-//!   needs the attachment/blob-serving system this codebase doesn't have
-//!   yet to resolve safely.
+//!   (the frontend reveals it only on explicit user action). `cid:` is
+//!   resolved against `cid_images` (the message's own inline
+//!   attachments, keyed by Content-ID) straight to a `data:` URI --
+//!   unlike remote `http(s)` images, this makes no network call to
+//!   anyone (the bytes are already inside the message), so it's shown
+//!   immediately, no reveal gate needed. An unresolvable `cid:`
+//!   (dangling, or pointing at a non-raster attachment) is dropped, same
+//!   as any other unrecognized scheme.
 //! - `a[href]`: only an *absolute* `http`/`https`/`mailto` URL survives,
 //!   moved to `data-real-href` with `href` blanked to `#` (the frontend's
 //!   trusted script intercepts the click and confirms before navigating
@@ -34,7 +38,9 @@
 //!   not a navigation) is always dropped too.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
+use base64::Engine;
 use html5ever::interface::Attribute;
 use html5ever::serialize::{serialize, SerializeOpts, TraversalScope};
 use html5ever::tendril::TendrilSink;
@@ -42,14 +48,32 @@ use html5ever::{local_name, ns, ParseOpts, QualName};
 use markup5ever_rcdom::{Handle, NodeData, RcDom, SerializableHandle};
 use url::Url;
 
+use crate::compose_html::is_allowed_color_style;
+
 pub struct SanitizedHtml {
     pub html: String,
     pub blocked_image_count: u32,
 }
 
-pub fn sanitize(raw_html: &str) -> SanitizedHtml {
+/// `<img>`-loaded SVG doesn't get script execution in modern browsers,
+/// but this module treats svg as radioactive everywhere else (see the
+/// module doc's hard rule) -- excluded here too, out of the same
+/// caution, rather than trusting that one specific mitigation forever.
+/// `email.rs` filters to this same list before a part ever reaches
+/// `cid_images` -- this is the second, independent check, not the only
+/// one.
+pub(crate) const ALLOWED_CID_IMAGE_TYPES: &[&str] =
+    &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// Content-ID (bare, unbracketed, matching `MimeHeaders::content_id()`'s
+/// output) -> (content_type, raw bytes) for this message's own inline
+/// attachments. Built by the caller from the same parse it already
+/// extracts attachment metadata from -- see `email.rs::open_and_parse`.
+pub type CidImages = HashMap<String, (String, Vec<u8>)>;
+
+pub fn sanitize(raw_html: &str, cid_images: &CidImages) -> SanitizedHtml {
     let pass1 = ammonia_clean(raw_html);
-    pass2_rewrite(&pass1)
+    pass2_rewrite(&pass1, cid_images)
 }
 
 fn ammonia_clean(raw_html: &str) -> String {
@@ -66,6 +90,7 @@ fn ammonia_clean(raw_html: &str) -> String {
         ("img", ["src", "alt", "width", "height"].into_iter().collect()),
         ("td", ["colspan", "rowspan"].into_iter().collect()),
         ("th", ["colspan", "rowspan"].into_iter().collect()),
+        ("span", ["style"].into_iter().collect()),
     ]
     .into_iter()
     .collect();
@@ -75,18 +100,32 @@ fn ammonia_clean(raw_html: &str) -> String {
         .clean_content_tags(["script", "style"].into_iter().collect())
         .tag_attributes(tag_attributes)
         .generic_attributes(Default::default())
-        .url_schemes(["http", "https", "mailto", "data"].into_iter().collect())
+        .url_schemes(["http", "https", "mailto", "data", "cid"].into_iter().collect())
+        // Same allowed-palette rule as the outbound sanitizer
+        // (`compose_html::is_allowed_color_style`) -- a `style`
+        // attribute is otherwise a live CSS-injection/exfiltration
+        // vector (e.g. `background: url(https://evil.example/track)`)
+        // regardless of whether the HTML came from this account's own
+        // compose flow or an external sender. Also needs to accept
+        // whatever a message's *own* `sanitize_outbound` pass already
+        // wrote, since every message's HTML (including this account's
+        // own drafts/Sent) round-trips through this sanitizer again on
+        // display.
+        .attribute_filter(|element, attribute, value| match (element, attribute) {
+            ("span", "style") => is_allowed_color_style(value).then(|| value.to_string().into()),
+            _ => Some(value.to_string().into()),
+        })
         .clean(raw_html)
         .to_string()
 }
 
-fn pass2_rewrite(clean_html: &str) -> SanitizedHtml {
+fn pass2_rewrite(clean_html: &str, cid_images: &CidImages) -> SanitizedHtml {
     let context = QualName::new(None, ns!(html), local_name!("div"));
     let dom = html5ever::driver::parse_fragment(RcDom::default(), ParseOpts::default(), context, vec![], false)
         .one(clean_html);
 
     let mut blocked_image_count = 0u32;
-    walk(&dom.document, &mut blocked_image_count);
+    walk(&dom.document, &mut blocked_image_count, cid_images);
 
     let inner_handle = first_child(&dom.document).unwrap_or_else(|| dom.document.clone());
     let inner: SerializableHandle = inner_handle.into();
@@ -116,16 +155,16 @@ fn first_child(handle: &Handle) -> Option<Handle> {
     handle.children.borrow().first().cloned()
 }
 
-fn walk(handle: &Handle, blocked_image_count: &mut u32) {
+fn walk(handle: &Handle, blocked_image_count: &mut u32, cid_images: &CidImages) {
     if let NodeData::Element { ref name, ref attrs, .. } = handle.data {
         match name.local.as_ref() {
-            "img" => rewrite_img(attrs, blocked_image_count),
+            "img" => rewrite_img(attrs, blocked_image_count, cid_images),
             "a" => rewrite_a(attrs),
             _ => {}
         }
     }
     for child in handle.children.borrow().iter() {
-        walk(child, blocked_image_count);
+        walk(child, blocked_image_count, cid_images);
     }
 }
 
@@ -148,7 +187,7 @@ fn remove_attr(attrs: &mut Vec<Attribute>, name: &str) {
     attrs.retain(|a| a.name.local.as_ref() != name);
 }
 
-fn rewrite_img(attrs: &RefCell<Vec<Attribute>>, blocked_image_count: &mut u32) {
+fn rewrite_img(attrs: &RefCell<Vec<Attribute>>, blocked_image_count: &mut u32, cid_images: &CidImages) {
     let mut attrs = attrs.borrow_mut();
     let Some(src) = attr_value(&attrs, "src") else {
         return;
@@ -159,14 +198,59 @@ fn rewrite_img(attrs: &RefCell<Vec<Attribute>>, blocked_image_count: &mut u32) {
         set_attr(&mut attrs, "src", src);
         return;
     }
+    if let Some(cid) = src.strip_prefix("cid:") {
+        // Resolving a `cid:` makes no network call to anyone -- the
+        // bytes are already inside this message -- so unlike a remote
+        // `http(s)` image there's nothing to gate behind a reveal
+        // click. RFC 2392 allows a `cid:` URL to percent-encode
+        // characters that appear literally in the Content-ID header, so
+        // decode before the lookup.
+        if let Some((content_type, bytes)) = cid_images.get(&percent_decode(cid)) {
+            // Defense in depth: `email.rs` already restricts what goes
+            // into `cid_images` to raster types before this is ever
+            // called, but this module shouldn't rely solely on the
+            // caller having gotten that right.
+            if ALLOWED_CID_IMAGE_TYPES.contains(&content_type.as_str()) {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                set_attr(&mut attrs, "src", format!("data:{content_type};base64,{encoded}"));
+            }
+        }
+        // Unknown/dangling cid -- drop, nothing to show.
+        return;
+    }
     if let Ok(url) = Url::parse(&src) {
         if url.scheme() == "http" || url.scheme() == "https" {
             set_attr(&mut attrs, "data-blocked-src", src);
             *blocked_image_count += 1;
         }
-        // Any other absolute scheme (cid:, etc.) -- drop, nothing to show.
+        // Any other absolute scheme -- drop, nothing to show.
     }
     // Relative or unparseable -- drop.
+}
+
+/// Minimal RFC 3986 `%XX` percent-decoder -- this codebase's own
+/// generated cids (`u{digits}`) never need it, but a real-world
+/// sender's Content-ID referenced from `cid:` HTML might contain
+/// percent-encoded characters even though the Content-ID header itself
+/// is never percent-encoded.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn rewrite_a(attrs: &RefCell<Vec<Attribute>>) {
@@ -192,31 +276,61 @@ fn rewrite_a(attrs: &RefCell<Vec<Attribute>>) {
 mod tests {
     use super::*;
 
+    fn no_cids() -> CidImages {
+        HashMap::new()
+    }
+
+    fn sanitize_plain(html: &str) -> SanitizedHtml {
+        sanitize(html, &no_cids())
+    }
+
     #[test]
     fn strips_script_tag_and_its_content() {
-        let out = sanitize("<p>hi</p><script>alert(1)</script>").html;
+        let out = sanitize_plain("<p>hi</p><script>alert(1)</script>").html;
         assert!(!out.contains("script"));
         assert!(!out.contains("alert"));
     }
 
     #[test]
     fn strips_event_handler_attributes() {
-        let out = sanitize(r#"<img src="data:image/gif;base64,AA==" onerror="alert(1)">"#).html;
+        let out = sanitize_plain(r#"<img src="data:image/gif;base64,AA==" onerror="alert(1)">"#).html;
         assert!(!out.contains("onerror"));
         assert!(!out.contains("alert"));
     }
 
     #[test]
     fn strips_style_tag_and_inline_style_attribute() {
-        let out = sanitize(r#"<style>body{background:url(https://evil.example/track)}</style><p style="color:red">hi</p>"#).html;
+        let out = sanitize_plain(r#"<style>body{background:url(https://evil.example/track)}</style><p style="color:red">hi</p>"#).html;
         assert!(!out.contains("<style"));
         assert!(!out.contains("style="));
         assert!(!out.contains("evil.example"));
     }
 
     #[test]
+    fn allows_exact_palette_color_on_span_and_drops_others() {
+        let out = sanitize_plain(
+            r#"<span style="color: #d92626">red</span><span style="background: url(https://evil.example/track)">exfil</span>"#,
+        )
+        .html;
+        assert!(out.contains(r#"style="color: #d92626""#));
+        assert!(!out.contains("url("));
+        assert!(!out.contains("evil.example"));
+    }
+
+    #[test]
+    fn allows_rgb_form_of_an_allowed_color() {
+        // What a composed message's own HTML actually contains on
+        // display -- the compose editor's Color extension always
+        // serializes to `rgb(...);` (semicolon included), never the hex
+        // form, and that HTML round-trips through this sanitizer again
+        // every time the message is viewed.
+        let out = sanitize_plain(r#"<span style="color: rgb(217, 38, 38);">red</span>"#).html;
+        assert!(out.contains("color: rgb(217, 38, 38)"));
+    }
+
+    #[test]
     fn blocks_remote_image_and_counts_it() {
-        let result = sanitize(r#"<img src="https://evil.example/pixel.gif">"#);
+        let result = sanitize_plain(r#"<img src="https://evil.example/pixel.gif">"#);
         assert!(!result.html.contains(" src=\"https://evil.example"));
         assert!(result.html.contains(r#"data-blocked-src="https://evil.example/pixel.gif""#));
         assert_eq!(result.blocked_image_count, 1);
@@ -224,22 +338,45 @@ mod tests {
 
     #[test]
     fn allows_data_uri_image_without_blocking() {
-        let result = sanitize(r#"<img src="data:image/gif;base64,AA==">"#);
+        let result = sanitize_plain(r#"<img src="data:image/gif;base64,AA==">"#);
         assert!(result.html.contains(r#"src="data:image/gif;base64,AA==""#));
         assert_eq!(result.blocked_image_count, 0);
     }
 
     #[test]
-    fn drops_cid_image_entirely() {
-        let result = sanitize(r#"<img src="cid:image001.png@example">"#);
+    fn resolves_known_cid_to_a_data_uri() {
+        let mut cids = HashMap::new();
+        cids.insert("u5".to_string(), ("image/png".to_string(), vec![1, 2, 3]));
+        let result = sanitize(r#"<img src="cid:u5">"#, &cids);
+        assert!(result.html.contains("data:image/png;base64,"));
         assert!(!result.html.contains("cid:"));
-        assert!(!result.html.contains("data-blocked-src"));
         assert_eq!(result.blocked_image_count, 0);
     }
 
     #[test]
+    fn drops_unknown_dangling_cid() {
+        let result = sanitize_plain(r#"<img src="cid:image001.png@example">"#);
+        assert!(!result.html.contains("cid:"));
+        assert!(!result.html.contains("data-blocked-src"));
+        assert!(!result.html.contains("src="));
+        assert_eq!(result.blocked_image_count, 0);
+    }
+
+    #[test]
+    fn drops_non_raster_cid_even_if_content_id_matches() {
+        let mut cids = HashMap::new();
+        cids.insert(
+            "u5".to_string(),
+            ("image/svg+xml".to_string(), b"<svg onload=alert(1)></svg>".to_vec()),
+        );
+        let result = sanitize(r#"<img src="cid:u5">"#, &cids);
+        assert!(!result.html.contains("data:"));
+        assert!(!result.html.contains("svg"));
+    }
+
+    #[test]
     fn rewrites_absolute_http_link_and_neutralizes_href() {
-        let out = sanitize(r#"<a href="https://example.com/page">click</a>"#).html;
+        let out = sanitize_plain(r#"<a href="https://example.com/page">click</a>"#).html;
         assert!(out.contains(r#"data-real-href="https://example.com/page""#));
         assert!(out.contains("href=\"#\""));
         assert!(!out.contains(" href=\"https://example.com/page\""));
@@ -247,27 +384,27 @@ mod tests {
 
     #[test]
     fn keeps_mailto_link() {
-        let out = sanitize(r#"<a href="mailto:someone@example.com">mail me</a>"#).html;
+        let out = sanitize_plain(r#"<a href="mailto:someone@example.com">mail me</a>"#).html;
         assert!(out.contains(r#"data-real-href="mailto:someone@example.com""#));
     }
 
     #[test]
     fn drops_relative_href_entirely() {
-        let out = sanitize(r#"<a href="/some/path">click</a>"#).html;
+        let out = sanitize_plain(r#"<a href="/some/path">click</a>"#).html;
         assert!(!out.contains("data-real-href"));
         assert!(!out.contains(r#"href="/some/path""#));
     }
 
     #[test]
     fn drops_javascript_href() {
-        let out = sanitize(r#"<a href="javascript:alert(1)">click</a>"#).html;
+        let out = sanitize_plain(r#"<a href="javascript:alert(1)">click</a>"#).html;
         assert!(!out.contains("javascript"));
         assert!(!out.contains("data-real-href"));
     }
 
     #[test]
     fn drops_ping_attribute() {
-        let out = sanitize(r#"<a href="https://example.com" ping="https://evil.example/beacon">click</a>"#).html;
+        let out = sanitize_plain(r#"<a href="https://example.com" ping="https://evil.example/beacon">click</a>"#).html;
         assert!(!out.contains("ping"));
         assert!(!out.contains("evil.example"));
     }
@@ -277,7 +414,7 @@ mod tests {
         // Hard rule enforced by construction (see module doc): assert
         // directly against the allowlist, not just behaviorally, so a
         // future edit can't accidentally reintroduce one of these.
-        let out = sanitize(
+        let out = sanitize_plain(
             r#"<svg><title>x</title></svg><math></math><iframe></iframe><noscript>x</noscript><textarea>x</textarea>"#,
         )
         .html;
@@ -288,21 +425,21 @@ mod tests {
 
     #[test]
     fn srcset_never_survives() {
-        let out = sanitize(r#"<img src="data:image/gif;base64,AA==" srcset="https://evil.example/x 1x">"#).html;
+        let out = sanitize_plain(r#"<img src="data:image/gif;base64,AA==" srcset="https://evil.example/x 1x">"#).html;
         assert!(!out.contains("srcset"));
         assert!(!out.contains("evil.example"));
     }
 
     #[test]
     fn malformed_html_does_not_panic() {
-        let _ = sanitize("<img src=<<<>>>>><a href=");
-        let _ = sanitize("");
-        let _ = sanitize("<div><div><div>unclosed");
+        let _ = sanitize_plain("<img src=<<<>>>>><a href=");
+        let _ = sanitize_plain("");
+        let _ = sanitize_plain("<div><div><div>unclosed");
     }
 
     #[test]
     fn plain_text_and_structure_survive() {
-        let out = sanitize("<p>Hello <b>world</b></p>").html;
+        let out = sanitize_plain("<p>Hello <b>world</b></p>").html;
         assert!(out.contains("Hello"));
         assert!(out.contains("world"));
     }

@@ -48,8 +48,12 @@ export default defineConfig({
 				directives: {
 					'default-src': ['self'],
 					'connect-src': ['self'],
-					// http:/https: needed for the message iframe's image reveal.
-					'img-src': ['self', 'data:', 'http:', 'https:'],
+					// http:/https: needed for the message iframe's image reveal;
+					// blob: needed for the compose editor's own live preview of
+					// a just-picked image (RichTextEditor.svelte) -- created
+					// locally from a File the user selected, never a remote
+					// fetch, so it carries none of http(s):'s tracking concerns.
+					'img-src': ['self', 'data:', 'blob:', 'http:', 'https:'],
 					'style-src': ['self', 'unsafe-inline'],
 					'script-src': ['self', trustedScriptHash],
 					'base-uri': ['none'],

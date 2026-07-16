@@ -43,6 +43,7 @@
 						to: addressListLabel(email.to),
 						cc: '',
 						subject: email.subject ?? '',
+						bodyHtml: email.bodyHtml ?? '',
 						bodyText: email.bodyText ?? ''
 					});
 					await goto('/mail');
@@ -102,6 +103,7 @@
 				to: addressListLabel(m.to),
 				cc: '',
 				subject: m.subject ?? '',
+				bodyHtml: m.bodyHtml ?? '',
 				bodyText: m.bodyText ?? ''
 			});
 		}

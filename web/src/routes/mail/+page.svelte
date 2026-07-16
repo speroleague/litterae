@@ -88,6 +88,7 @@
 			to: addressListLabel(email.to),
 			cc: '',
 			subject: email.subject ?? '',
+			bodyHtml: email.bodyHtml ?? '',
 			bodyText: email.bodyText ?? ''
 		});
 	}

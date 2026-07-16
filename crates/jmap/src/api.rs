@@ -12,6 +12,7 @@ use store::{
 };
 
 use crate::compose;
+use crate::compose_html;
 use crate::email;
 use crate::types::{
     error_response, EmailCreateRequest, EmailGetArgs, EmailGetResult, EmailObject, EmailQueryArgs,
@@ -424,11 +425,39 @@ pub(crate) fn now_unix() -> i64 {
 /// is stored identically to a received one, just with placeholder envelope
 /// fields (`mail_from`/`remote_ip`/auth verdicts) since there was no real
 /// SMTP transaction.
-/// Resolves `u{id}` upload blobIds referenced by a compose request into
-/// decrypted attachment bytes. Ownership-checked the same way every other
-/// cross-table lookup in this file is: "doesn't exist" and "belongs to a
-/// different account" both just fail the whole create, no distinction
-/// visible to the caller.
+struct ResolvedUpload {
+    filename: String,
+    content_type: String,
+    bytes: Vec<u8>,
+}
+
+/// Resolves and decrypts one `u{id}` upload blobId. Ownership-checked
+/// the same way every other cross-table lookup in this file is:
+/// "doesn't exist" and "belongs to a different account" both just fail,
+/// no distinction visible to the caller. Shared core for both regular
+/// (chip-list) attachments and inline (`cid:`-referenced) images --
+/// they differ only in what they do with the result, not in how it's
+/// fetched.
+fn resolve_upload(ctx: &AccountContext, account_id: i64, blob_id: &str) -> Result<ResolvedUpload, String> {
+    let upload_id = blob_id
+        .strip_prefix('u')
+        .and_then(|rest| rest.parse::<i64>().ok())
+        .ok_or_else(|| format!("invalid blobId: {blob_id}"))?;
+    let stored = ctx
+        .metadata
+        .get_upload(upload_id)
+        .map_err(|e| e.to_string())?
+        .filter(|u| u.account_id == account_id)
+        .ok_or_else(|| format!("no such upload: {blob_id}"))?;
+    let bytes = delivery::open_blob(ctx.blobs, &stored.blob_hash, &stored.dek_wrap, ctx.account_priv)
+        .map_err(|e| e.to_string())?;
+    Ok(ResolvedUpload {
+        filename: stored.filename,
+        content_type: stored.content_type,
+        bytes,
+    })
+}
+
 fn resolve_attachments(
     ctx: &AccountContext,
     account_id: i64,
@@ -437,27 +466,32 @@ fn resolve_attachments(
     blob_ids
         .iter()
         .map(|blob_id| {
-            let upload_id = blob_id
-                .strip_prefix('u')
-                .and_then(|rest| rest.parse::<i64>().ok())
-                .ok_or_else(|| format!("invalid attachment blobId: {blob_id}"))?;
-            let stored = ctx
-                .metadata
-                .get_upload(upload_id)
-                .map_err(|e| e.to_string())?
-                .filter(|u| u.account_id == account_id)
-                .ok_or_else(|| format!("no such attachment: {blob_id}"))?;
-            let bytes = delivery::open_blob(
-                ctx.blobs,
-                &stored.blob_hash,
-                &stored.dek_wrap,
-                ctx.account_priv,
-            )
-            .map_err(|e| e.to_string())?;
+            let upload = resolve_upload(ctx, account_id, blob_id)?;
             Ok(compose::Attachment {
-                filename: stored.filename,
-                content_type: stored.content_type,
-                bytes,
+                filename: upload.filename,
+                content_type: upload.content_type,
+                bytes: upload.bytes,
+            })
+        })
+        .collect()
+}
+
+/// `cids` are `u{id}` upload references pulled out of the sanitized
+/// compose HTML's own `img[src="cid:..."]` attributes (see
+/// `compose_html::extract_inline_cids`) -- the upload's own blobId is
+/// reused directly as the MIME Content-ID, no separate id scheme.
+fn resolve_inline_images(
+    ctx: &AccountContext,
+    account_id: i64,
+    cids: &[String],
+) -> Result<Vec<compose::InlineImage>, String> {
+    cids.iter()
+        .map(|cid| {
+            let upload = resolve_upload(ctx, account_id, cid)?;
+            Ok(compose::InlineImage {
+                content_id: cid.clone(),
+                content_type: upload.content_type,
+                bytes: upload.bytes,
             })
         })
         .collect()
@@ -537,16 +571,33 @@ fn create_draft(
 
     let attachments = resolve_attachments(ctx, account_id, &req.attachment_blob_ids)?;
 
+    // `body_html` is untrusted client input regardless of who's
+    // logged in -- anyone can call `/jmap/api` directly with
+    // hand-crafted markup -- so it's sanitized before anything else
+    // touches it. Once there's a sanitized HTML body, the plain-text
+    // part is always derived from it (never the client-sent
+    // `bodyText`), so the two can't drift out of sync with what was
+    // actually sent.
+    let sanitized_html = req.body_html.as_deref().map(compose_html::sanitize_outbound);
+    let inline_cids = sanitized_html
+        .as_deref()
+        .map(compose_html::extract_inline_cids)
+        .unwrap_or_default();
+    let inline_images = resolve_inline_images(ctx, account_id, &inline_cids)?;
+    let derived_text = sanitized_html.as_deref().map(compose_html::html_to_text);
+
     let raw = compose::build(
         ctx.address,
         &req.to,
         &req.cc,
         req.subject.as_deref(),
-        req.body_text.as_deref(),
+        derived_text.as_deref().or(req.body_text.as_deref()),
+        sanitized_html.as_deref(),
         in_reply_to_header.as_deref(),
         references_header.as_deref(),
         now,
         &attachments,
+        &inline_images,
     )?;
     if raw.bytes.len() > ctx.max_upload_size {
         return Err("message exceeds the maximum allowed size".to_string());

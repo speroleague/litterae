@@ -531,4 +531,10 @@
 		color: var(--accent);
 		text-decoration: underline;
 	}
+	/* TipTap mounts its own contenteditable `.ProseMirror` div inside
+	   `editorEl`, not `editorEl` itself -- `outline-none` must target it
+	   directly. */
+	:global(.tiptap-body .ProseMirror) {
+		outline: none;
+	}
 </style>

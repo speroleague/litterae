@@ -52,6 +52,11 @@ function signatureBlockHtml(): string {
 	return `<p>-- </p><p>${lines}</p>`;
 }
 
+/** Signature block preceded by an empty paragraph for the cursor. */
+function initialBodyHtml(): string {
+	return `<p></p>${signatureBlockHtml()}`;
+}
+
 function reset() {
 	composeState.draftId = null;
 	composeState.inReplyTo = null;
@@ -72,7 +77,7 @@ export function removeAttachment(blobId: string) {
 
 export function openNewMessage() {
 	reset();
-	composeState.bodyHtml = signatureBlockHtml();
+	composeState.bodyHtml = initialBodyHtml();
 	composeState.open = true;
 }
 
@@ -81,7 +86,7 @@ export function openReply(opts: { to: string; subject: string; inReplyTo: string
 	composeState.to = opts.to;
 	composeState.subject = opts.subject.toLowerCase().startsWith('re:') ? opts.subject : `Re: ${opts.subject}`;
 	composeState.inReplyTo = opts.inReplyTo;
-	composeState.bodyHtml = signatureBlockHtml();
+	composeState.bodyHtml = initialBodyHtml();
 	composeState.open = true;
 }
 

@@ -113,7 +113,7 @@
 			transition:fade={{ duration: 150 }}
 		></button>
 		<div
-			class="relative z-10 flex w-full flex-col sm:max-h-[85vh] sm:w-full sm:max-w-lg sm:rounded-[var(--radius)]"
+			class="relative z-10 flex w-full flex-col sm:max-h-[88vh] sm:w-full sm:max-w-2xl sm:rounded-[var(--radius)]"
 			style="background: var(--surface); border-top: 1px solid var(--border); max-height: 90vh;"
 			transition:fly={{ y: 24, duration: 200 }}
 		>

@@ -1,0 +1,722 @@
+{
+  "project": {
+    "name": "litterae",
+    "root": "/home/justin/Projects/litterae",
+    "generated_unix_seconds": 1784472470
+  },
+  "evidence": {
+    "files": 98,
+    "workflows": 23,
+    "flows": 7787,
+    "findings": 105
+  },
+  "records": {
+    "expectations": 3,
+    "verifications": 0,
+    "decisions": 0,
+    "work": 0
+  },
+  "review": {
+    "critical": 0,
+    "warning": 104,
+    "attention": 11
+  },
+  "result": {
+    "status": "passed",
+    "failed": false,
+    "strict": false,
+    "reason": "passed with review items"
+  },
+  "items": [
+    {
+      "severity": "warning",
+      "title": "SUS001: Large source file",
+      "detail": "Observed crates/admin/src/handlers.rs with 721 lines. Large files can reduce workflow and ownership clarity.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS001: Large source file",
+      "detail": "Observed crates/jmap/src/api.rs with 937 lines. Large files can reduce workflow and ownership clarity.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS001: Large source file",
+      "detail": "Observed crates/jmap/tests/end_to_end.rs with 685 lines. Large files can reduce workflow and ownership clarity.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS001: Large source file",
+      "detail": "Observed crates/queue/src/worker.rs with 921 lines. Large files can reduce workflow and ownership clarity.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS001: Large source file",
+      "detail": "Observed crates/smtp-in/src/session.rs with 613 lines. Large files can reduce workflow and ownership clarity.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS001: Large source file",
+      "detail": "Observed crates/smtp-in/tests/end_to_end.rs with 782 lines. Large files can reduce workflow and ownership clarity.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed bootstrap_login_forced_reset_domains_accounts_and_queue spanning 235 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed domain_dkim_and_verification_endpoints spanning 130 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed logs_endpoint_filters_by_time_and_level spanning 108 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed deliver spanning 83 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed email_set spanning 168 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed create_draft spanning 151 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed build spanning 84 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed open_and_parse spanning 89 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed compose_save_draft_then_send_lands_in_sent_and_queue spanning 144 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed a_draft_reply_joins_the_original_thread spanning 102 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed body_html_is_sanitized_and_inline_image_round_trips_and_is_account_scoped spanning 125 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed unlock_query_get_round_trips_decrypted_content spanning 156 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed html_email_is_sanitized_and_images_blocked_over_jmap spanning 108 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed inbound_attachment_metadata_is_exposed_over_jmap spanning 115 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed download_is_a_uniform_404_across_accounts_for_message_and_upload_blobs spanning 175 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed flag_move_delete_search_and_threads spanning 268 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed unread_filter_spans_every_mailbox_and_pagination_reports_a_stable_total spanning 114 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed finalize spanning 98 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed main spanning 230 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed command_loop spanning 233 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed real_message_lands_decrypts_on_unlock_dkim_stored spanning 115 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed catch_all_delivers_to_configured_mailbox spanning 88 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed starttls_upgrades_and_delivers_over_encrypted_channel spanning 130 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed run spanning 108 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed command_loop spanning 178 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS002: Long workflow unit",
+      "detail": "Observed handle_auth spanning 82 lines. Long units can reduce independent workflow reviewability.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed finalize coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed cannot_send_as_someone_else coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed deliver coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed handle_auth coordinating 9 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed change_password coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed catch_all_delivers_to_configured_mailbox coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed run coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed logs_endpoint_filters_by_time_and_level coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed finalize_permanent_failure_marks_failed_and_delivers_dsn_locally coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed main coordinating 14 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed starttls_upgrades_and_delivers_over_encrypted_channel coordinating 10 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed implicit_tls_auth_and_submit_lands_signed_in_queue coordinating 11 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed real_message_lands_decrypts_on_unlock_dkim_stored coordinating 9 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed command_loop coordinating 13 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed command_loop coordinating 11 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed submit_email coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed dispatch coordinating 9 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed email_set coordinating 10 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed bootstrap_login_forced_reset_domains_accounts_and_queue coordinating 9 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed send_unit coordinating 8 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS003: High fan-out",
+      "detail": "Observed create_draft coordinating 15 internal units. High fan-out marks a code-change attention point.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: get -> get",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: remove -> remove",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: list_domains -> list_domains",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: list_accounts -> list_accounts",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: new -> new",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: log -> keyed_hash -> finalize -> log",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: finalize -> maybe_send_dsn -> deliver -> finalize",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: finalize -> maybe_send_dsn -> deliver -> seal_for_account -> write -> hash_hex -> finalize",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: exists -> exists",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: change_password -> change_password",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: create_domain -> create_domain",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: delete_domain -> delete_domain",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: delete_account -> delete_account",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: new -> new",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: new -> new",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open -> open",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open_in_memory -> open_in_memory",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open -> open",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open_in_memory -> open_in_memory",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: verify -> verify",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open -> open",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open_in_memory -> open_in_memory",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: new -> new",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: subscribe -> subscribe",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: new -> new",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: init -> init",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: sign -> sign",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: read -> read",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: new -> new",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: parse_fragment -> parse_fragment",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: walk -> walk",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: collect_cids -> collect_cids",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: walk_text -> walk_children -> walk_text",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: unlock -> unlock",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: remove -> remove",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: connect -> connect",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: new -> new",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: new -> new",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: sign -> sign",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open -> open",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open_in_memory -> open_in_memory",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: poll_read -> poll_read",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: poll_write -> poll_write",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: poll_flush -> poll_flush",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: poll_shutdown -> poll_shutdown",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: provision -> provision",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: serve -> serve",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open -> open",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: open_in_memory -> open_in_memory",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: unlock -> unlock",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "warning",
+      "title": "SUS005: Call cycle",
+      "detail": "Observed call cycle: lock -> lock",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "GET /admin/audit has unresolved call edges",
+      "detail": "GET /admin/audit has 10 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "GET /admin/domains/{id}/dkim has unresolved call edges",
+      "detail": "GET /admin/domains/{id}/dkim has 7 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "GET /admin/logs has unresolved call edges",
+      "detail": "GET /admin/logs has 38 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "GET /admin/queue has unresolved call edges",
+      "detail": "GET /admin/queue has 7 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "GET /admin/status has unresolved call edges",
+      "detail": "GET /admin/status has 7 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "GET /jmap/download/{blob_id} has unresolved call edges",
+      "detail": "GET /jmap/download/{blob_id} has 6 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "GET /jmap/session has unresolved call edges",
+      "detail": "GET /jmap/session has 18 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "GET /jmap/sse has unresolved call edges",
+      "detail": "GET /jmap/sse has 8 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "POST /admin/accounts has unresolved call edges",
+      "detail": "POST /admin/accounts has 10 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "POST /admin/domains/{id}/verify has unresolved call edges",
+      "detail": "POST /admin/domains/{id}/verify has 11 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    },
+    {
+      "severity": "attention",
+      "title": "POST /jmap/api has unresolved call edges",
+      "detail": "POST /jmap/api has 10 unresolved outgoing call edges. This may be framework, library, generated, or dynamic behavior.",
+      "source": "susumu:derived"
+    }
+  ]
+}

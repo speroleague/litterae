@@ -4,6 +4,7 @@
 //! message content is ever indexed -- this exists only in the memory of a
 //! process that currently holds the account's unwrapped private key.
 
+use rayon::prelude::*;
 use rusqlite::Connection;
 use std::sync::Mutex;
 
@@ -65,18 +66,26 @@ fn build_index(
     )
     .map_err(|e| common::Error::Storage(e.to_string()))?;
 
-    for stored in metadata.messages_for_account(account_id)? {
-        let Ok(raw) = delivery::open_message(blobs, &stored, account_priv) else {
-            continue; // a corrupt/unreadable message shouldn't block the whole index
-        };
-        let Some(parsed) = mail_parser::MessageParser::default().parse(&raw) else {
-            continue;
-        };
-        let subject = parsed.subject().unwrap_or_default();
-        let body = parsed.body_text(0).unwrap_or_default();
+    // Decrypting and MIME-parsing each message is independent CPU work --
+    // do it in parallel across the blocking pool's threads. The in-memory
+    // connection isn't `Sync`, so inserts still happen in one sequential
+    // pass afterward.
+    let docs: Vec<(i64, String, String)> = metadata
+        .messages_for_account(account_id)?
+        .par_iter()
+        .filter_map(|stored| {
+            let raw = delivery::open_message(blobs, stored, account_priv).ok()?; // corrupt/unreadable message shouldn't block the whole index
+            let parsed = mail_parser::MessageParser::default().parse(&raw)?;
+            let subject = parsed.subject().unwrap_or_default().to_string();
+            let body = parsed.body_text(0).unwrap_or_default().to_string();
+            Some((stored.id, subject, body))
+        })
+        .collect();
+
+    for (message_id, subject, body) in docs {
         conn.execute(
             "INSERT INTO docs (message_id, subject, body) VALUES (?1, ?2, ?3)",
-            rusqlite::params![stored.id, subject, body.as_ref()],
+            rusqlite::params![message_id, subject, body],
         )
         .map_err(|e| common::Error::Storage(e.to_string()))?;
     }

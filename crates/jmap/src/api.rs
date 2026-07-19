@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use queue::QueueStore;
@@ -228,18 +229,31 @@ fn email_get(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
         Err(e) => return error_response("serverFail", &e.to_string(), call_id),
     };
 
-    let mut list: Vec<EmailObject> = Vec::new();
-    for (id, row_id) in requested {
-        let stored = match stored_by_id.get(&row_id) {
-            Some(m) if m.account_id.to_string() == ctx.account_id_str => m,
-            _ => {
-                not_found.push(id);
-                continue;
-            }
-        };
-        match email::open_and_parse(ctx.blobs, stored, ctx.account_priv, properties.as_ref()) {
+    // Decrypting, MIME-parsing, and (when requested) HTML-sanitizing each
+    // message is independent CPU work, so a page of ids does it in
+    // parallel rather than one at a time. Capturing plain field
+    // references (not `ctx` itself, which holds a `dyn Fn`) keeps every
+    // captured value `Sync`.
+    let blobs = ctx.blobs;
+    let account_priv = ctx.account_priv;
+    let account_id_str = &ctx.account_id_str;
+    let results: Vec<Result<EmailObject, String>> = requested
+        .par_iter()
+        .map(|(id, row_id)| {
+            let stored = stored_by_id
+                .get(row_id)
+                .filter(|m| &m.account_id.to_string() == account_id_str)
+                .ok_or_else(|| id.clone())?;
+            email::open_and_parse(blobs, stored, account_priv, properties.as_ref())
+                .map_err(|_| id.clone())
+        })
+        .collect();
+
+    let mut list: Vec<EmailObject> = Vec::with_capacity(results.len());
+    for result in results {
+        match result {
             Ok(obj) => list.push(obj),
-            Err(_) => not_found.push(id),
+            Err(id) => not_found.push(id),
         }
     }
 

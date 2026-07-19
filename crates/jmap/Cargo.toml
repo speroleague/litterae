@@ -32,6 +32,7 @@ zeroize.workspace = true
 hex.workspace = true
 rusqlite.workspace = true
 base64.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 tower.workspace = true

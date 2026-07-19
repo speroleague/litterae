@@ -2062,6 +2062,7 @@ dependencies = [
  "mail-builder",
  "mail-send",
  "rand 0.10.2",
+ "rsa",
  "rusqlite",
  "rustls-pki-types",
  "store",

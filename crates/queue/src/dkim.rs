@@ -85,10 +85,20 @@ impl QueueStore {
 }
 
 impl DomainKey {
-    /// The DNS TXT record value to publish at
-    /// `{selector}._domainkey.{domain}`.
+    /// The DNS TXT record value to publish at `{selector}._domainkey.{domain}`.
+    /// `public_der` is PKCS#1 DER; `p=` must be X.509 SubjectPublicKeyInfo DER.
     pub fn dns_txt_record(&self) -> String {
-        format!("v=DKIM1; k=rsa; p={}", base64_encode(&self.public_der))
+        format!("v=DKIM1; k=rsa; p={}", base64_encode(&self.public_key_spki_der()))
+    }
+
+    fn public_key_spki_der(&self) -> Vec<u8> {
+        use rsa::pkcs1::DecodeRsaPublicKey;
+        use rsa::pkcs8::EncodePublicKey;
+        rsa::RsaPublicKey::from_pkcs1_der(&self.public_der)
+            .expect("stored DKIM public key is valid PKCS#1 DER (we generated it)")
+            .to_public_key_der()
+            .expect("RSA public key always re-encodes to SPKI DER")
+            .into_vec()
     }
 
     fn signing_key(&self) -> Result<RsaKey<Sha256>> {
@@ -161,5 +171,33 @@ mod tests {
         let key = store.ensure_dkim_key("example.com").unwrap();
         let record = key.dns_txt_record();
         assert!(record.starts_with("v=DKIM1; k=rsa; p="));
+    }
+
+    /// `p=` must decode as X.509 SubjectPublicKeyInfo DER, not the bare
+    /// PKCS#1 `RSAPublicKey` DER `public_der` is stored as. Also checks
+    /// the modulus/exponent match, since the two formats are easy to
+    /// conflate silently.
+    #[test]
+    fn dns_record_publishes_spki_matching_the_signing_key() {
+        use rsa::pkcs1::DecodeRsaPublicKey;
+        use rsa::pkcs8::DecodePublicKey;
+        use rsa::traits::PublicKeyParts;
+
+        let store = QueueStore::open_in_memory().unwrap();
+        let key = store.ensure_dkim_key("example.com").unwrap();
+        let record = key.dns_txt_record();
+        let p_value = record
+            .split("p=")
+            .nth(1)
+            .expect("record has a p= tag");
+        let published_der = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, p_value)
+            .expect("p= is valid base64");
+
+        let spki_key = rsa::RsaPublicKey::from_public_key_der(&published_der)
+            .expect("p= decodes as X.509 SubjectPublicKeyInfo DER");
+        let pkcs1_key = rsa::RsaPublicKey::from_pkcs1_der(&key.public_der)
+            .expect("stored public_der is still valid PKCS#1 DER");
+        assert_eq!(spki_key.n(), pkcs1_key.n());
+        assert_eq!(spki_key.e(), pkcs1_key.e());
     }
 }

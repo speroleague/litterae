@@ -2,7 +2,7 @@
 //! one place that actually decrypts message content -- it always requires
 //! the account's private key, i.e. the mailbox must be unlocked.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mail_parser::{MessageParser, MimeHeaders};
 
@@ -13,13 +13,24 @@ use crate::types::{EmailAddress, EmailAttachment, EmailObject};
 
 const PREVIEW_LEN: usize = 200;
 
+/// `properties: None` means every field (the JMAP default, and what every
+/// caller got before `properties` existed). A mail list row needs none of
+/// the two genuinely expensive per-message steps below -- attachment
+/// assembly and HTML sanitization -- so a summary-only request skips
+/// both; decrypting and MIME-parsing the message stays unconditional,
+/// since there's no cleartext preview to read instead.
 pub fn open_and_parse(
     blobs: &BlobStore,
     stored: &StoredMessage,
     account_priv: &[u8; crypto::hpke_seal::PRIVATE_KEY_LEN],
+    properties: Option<&HashSet<String>>,
 ) -> common::Result<EmailObject> {
     let raw = delivery::open_message(blobs, stored, account_priv)?;
     let message = MessageParser::default().parse(&raw);
+
+    let wants = |field: &str| properties.is_none_or(|p| p.contains(field));
+    let need_attachments = wants("attachments");
+    let need_html = wants("bodyHtml");
 
     // Attachments already live inside the one sealed blob this message
     // is -- no separate storage, just metadata pulled from the same
@@ -29,25 +40,31 @@ pub fn open_and_parse(
     // built from one enumeration pass, not two.
     let mut attachments = Vec::new();
     let mut cid_images: CidImages = HashMap::new();
-    if let Some(m) = &message {
-        for (index, part) in m.attachments().enumerate() {
-            let content_type = part
-                .content_type()
-                .map(|ct| match &ct.c_subtype {
-                    Some(sub) => format!("{}/{sub}", ct.c_type),
-                    None => ct.c_type.to_string(),
-                })
-                .unwrap_or_else(|| "application/octet-stream".to_string());
-            let contents = part.contents();
-            attachments.push(EmailAttachment {
-                blob_id: format!("m{}.{}", stored.id, index),
-                name: part.attachment_name().unwrap_or("attachment").to_string(),
-                content_type: content_type.clone(),
-                size: contents.len() as i64,
-            });
-            if let Some(cid) = part.content_id() {
-                if ALLOWED_CID_IMAGE_TYPES.contains(&content_type.as_str()) {
-                    cid_images.insert(cid.to_string(), (content_type, contents.to_vec()));
+    if need_attachments || need_html {
+        if let Some(m) = &message {
+            for (index, part) in m.attachments().enumerate() {
+                let content_type = part
+                    .content_type()
+                    .map(|ct| match &ct.c_subtype {
+                        Some(sub) => format!("{}/{sub}", ct.c_type),
+                        None => ct.c_type.to_string(),
+                    })
+                    .unwrap_or_else(|| "application/octet-stream".to_string());
+                let contents = part.contents();
+                if need_attachments {
+                    attachments.push(EmailAttachment {
+                        blob_id: format!("m{}.{}", stored.id, index),
+                        name: part.attachment_name().unwrap_or("attachment").to_string(),
+                        content_type: content_type.clone(),
+                        size: contents.len() as i64,
+                    });
+                }
+                if need_html {
+                    if let Some(cid) = part.content_id() {
+                        if ALLOWED_CID_IMAGE_TYPES.contains(&content_type.as_str()) {
+                            cid_images.insert(cid.to_string(), (content_type, contents.to_vec()));
+                        }
+                    }
                 }
             }
         }
@@ -59,8 +76,8 @@ pub fn open_and_parse(
             addresses(m.to()),
             m.subject().map(|s| s.to_string()),
             m.body_text(0).map(|s| s.to_string()),
-            (m.html_body_count() > 0)
-                .then(|| m.body_html(0))
+            need_html
+                .then(|| (m.html_body_count() > 0).then(|| m.body_html(0)).flatten())
                 .flatten()
                 .map(|html| html_sanitize::sanitize(&html, &cid_images)),
         ),

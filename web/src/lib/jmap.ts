@@ -159,13 +159,33 @@ export async function queryEmails(
 	return { ids: result.ids as string[], total: result.total as number };
 }
 
+/** Fields a mail list row actually renders -- passed as `properties` so
+ * the server can skip HTML sanitization and attachment assembly, the two
+ * expensive per-message steps a preview row never needs. */
+const LIST_ROW_PROPERTIES = [
+	'id',
+	'threadId',
+	'mailboxIds',
+	'keywords',
+	'from',
+	'to',
+	'subject',
+	'receivedAt',
+	'preview',
+	'spamScore',
+	'avClean'
+];
+
 export async function getEmails(
 	token: string,
 	accountId: string,
-	ids: string[]
+	ids: string[],
+	properties?: string[]
 ): Promise<EmailObject[]> {
 	if (ids.length === 0) return [];
-	const [[, result]] = await callApi(token, [['Email/get', { accountId, ids }, 'c1']]);
+	const args: Record<string, unknown> = { accountId, ids };
+	if (properties) args.properties = properties;
+	const [[, result]] = await callApi(token, [['Email/get', args, 'c1']]);
 	return result.list as EmailObject[];
 }
 
@@ -189,7 +209,7 @@ export async function loadMailbox(
 	limit: number = DEFAULT_PAGE_SIZE
 ): Promise<MailboxPage> {
 	const page = await queryEmails(token, accountId, filter, position, limit);
-	const emails = await getEmails(token, accountId, page.ids);
+	const emails = await getEmails(token, accountId, page.ids, LIST_ROW_PROPERTIES);
 	return { emails, total: page.total };
 }
 

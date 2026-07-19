@@ -3,6 +3,8 @@
 //! or `["error", {...}, callId]` on a method-level failure. No JMAP server
 //! framework exists, so this dispatch table is hand-rolled.
 
+use std::collections::{HashMap, HashSet};
+
 use sha2::{Digest, Sha256};
 
 use queue::QueueStore;
@@ -207,25 +209,37 @@ fn email_get(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
     if args.account_id != ctx.account_id_str {
         return error_response("accountNotFound", "unknown accountId", call_id);
     }
+    let properties: Option<HashSet<String>> =
+        args.properties.map(|p| p.into_iter().collect());
+
+    let mut not_found = Vec::new();
+    let mut requested: Vec<(String, i64)> = Vec::with_capacity(args.ids.len());
+    for id in &args.ids {
+        match email_row_id(id) {
+            Some(row_id) => requested.push((id.clone(), row_id)),
+            None => not_found.push(id.clone()),
+        }
+    }
+
+    // One batched lookup for the whole page instead of one query per id.
+    let row_ids: Vec<i64> = requested.iter().map(|(_, row_id)| *row_id).collect();
+    let stored_by_id: HashMap<i64, store::StoredMessage> = match ctx.metadata.get_messages(&row_ids) {
+        Ok(rows) => rows.into_iter().map(|m| (m.id, m)).collect(),
+        Err(e) => return error_response("serverFail", &e.to_string(), call_id),
+    };
 
     let mut list: Vec<EmailObject> = Vec::new();
-    let mut not_found = Vec::new();
-
-    for id in &args.ids {
-        let Some(row_id) = email_row_id(id) else {
-            not_found.push(id.clone());
-            continue;
-        };
-        let stored = match ctx.metadata.get_message(row_id) {
-            Ok(Some(m)) if m.account_id.to_string() == ctx.account_id_str => m,
+    for (id, row_id) in requested {
+        let stored = match stored_by_id.get(&row_id) {
+            Some(m) if m.account_id.to_string() == ctx.account_id_str => m,
             _ => {
-                not_found.push(id.clone());
+                not_found.push(id);
                 continue;
             }
         };
-        match email::open_and_parse(ctx.blobs, &stored, ctx.account_priv) {
+        match email::open_and_parse(ctx.blobs, stored, ctx.account_priv, properties.as_ref()) {
             Ok(obj) => list.push(obj),
-            Err(_) => not_found.push(id.clone()),
+            Err(_) => not_found.push(id),
         }
     }
 

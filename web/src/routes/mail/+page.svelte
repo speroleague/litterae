@@ -18,6 +18,7 @@
 	import { session, lock } from '$lib/session.svelte';
 	import {
 		loadMailbox,
+		getEmails,
 		setKeyword,
 		moveToMailbox,
 		destroyEmail,
@@ -81,15 +82,22 @@
 		return addrs.map((a) => a.name || a.email).join(', ');
 	}
 
-	function resumeDraft(e: MouseEvent, email: EmailObject) {
+	// List rows are fetched with summary-only properties (no bodyHtml/
+	// bodyText -- see LIST_ROW_PROPERTIES in $lib/jmap), so resuming a
+	// draft needs one extra fetch for its actual content.
+	async function resumeDraft(e: MouseEvent, email: EmailObject) {
 		e.preventDefault();
+		const token = session.token;
+		const accountId = session.accountId;
+		if (!token || !accountId) return;
+		const [full] = await getEmails(token, accountId, [email.id]);
 		openDraft({
 			draftId: email.id,
 			to: addressListLabel(email.to),
 			cc: '',
 			subject: email.subject ?? '',
-			bodyHtml: email.bodyHtml ?? '',
-			bodyText: email.bodyText ?? ''
+			bodyHtml: full?.bodyHtml ?? '',
+			bodyText: full?.bodyText ?? ''
 		});
 	}
 

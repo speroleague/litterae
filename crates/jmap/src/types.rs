@@ -126,6 +126,11 @@ pub struct EmailGetArgs {
     #[serde(rename = "accountId")]
     pub account_id: String,
     pub ids: Vec<String>,
+    /// `None` means every field, same as omitting it entirely. When set,
+    /// `open_and_parse` skips HTML sanitization and attachment assembly
+    /// for fields not requested.
+    #[serde(default)]
+    pub properties: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]

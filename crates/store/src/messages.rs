@@ -185,6 +185,29 @@ impl MetadataStore {
         .map_err(storage_err)
     }
 
+    /// Batched form of `get_message` -- one `WHERE id IN (...)` round trip
+    /// instead of N, for callers (`Email/get`) that resolve a whole page of
+    /// ids at once. Order is not guaranteed to match `ids`; callers that
+    /// care (preserving request order, reporting `notFound`) index the
+    /// result by id themselves.
+    pub fn get_messages(&self, ids: &[i64]) -> Result<Vec<StoredMessage>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().expect("metadata store mutex poisoned");
+        let placeholders = std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {MESSAGE_COLUMNS} FROM messages WHERE id IN ({placeholders})"
+            ))
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(ids.iter()), row_to_message)
+            .map_err(storage_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err)
+    }
+
     pub fn messages_for_account(&self, account_id: i64) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().expect("metadata store mutex poisoned");
         let mut stmt = conn
@@ -403,6 +426,25 @@ mod tests {
     fn unknown_id_returns_none() {
         let store = MetadataStore::open_in_memory().unwrap();
         assert!(store.get_message(999).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_messages_batches_lookup_and_skips_unknown_ids() {
+        let store = MetadataStore::open_in_memory().unwrap();
+        let id1 = store.insert_message(&sample(1)).unwrap();
+        let id2 = store.insert_message(&sample(1)).unwrap();
+
+        let found = store.get_messages(&[id1, id2, 999]).unwrap();
+        assert_eq!(found.len(), 2);
+        let mut ids: Vec<i64> = found.iter().map(|m| m.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![id1, id2]);
+    }
+
+    #[test]
+    fn get_messages_empty_input_returns_empty() {
+        let store = MetadataStore::open_in_memory().unwrap();
+        assert!(store.get_messages(&[]).unwrap().is_empty());
     }
 
     #[test]

@@ -164,56 +164,70 @@ pub async fn jmap_api(
     headers: HeaderMap,
     Json(req): Json<Request>,
 ) -> Result<Json<Response>, StatusCode> {
-    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = bearer_token(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?
+        .to_string();
     let account_id_str = state
         .sessions
-        .account_id(token)
+        .account_id(&token)
         .ok_or(StatusCode::UNAUTHORIZED)?
         .to_string();
 
-    let mut method_responses = Vec::with_capacity(req.method_calls.len());
-    for call in req.method_calls {
-        // Run the whole dispatch inside the session lock's closure so the
-        // account private key is only ever touched by reference, never
-        // copied out to a local variable. Account priv and the search
-        // index come from the same locked section (see with_session's
-        // doc) so a text-search filter doesn't need to re-lock the
-        // registry.
-        let response = state.sessions.with_session(
-            token,
-            |account_id, account_priv, search_index, identity, amk| {
-                let search_fn = |query: &str| -> common::Result<Vec<i64>> {
-                    search_index.search(
-                        &state.blobs,
-                        &state.metadata,
-                        account_id,
+    // Decryption, MIME parsing, and HTML sanitization inside `dispatch`
+    // are synchronous CPU work, not I/O -- running them straight on the
+    // async task would tie up a Tokio worker thread for the whole batch
+    // and serialize unrelated requests behind it. `spawn_blocking` moves
+    // the whole per-call loop onto the blocking pool, so concurrent
+    // `Email/get` calls (different tabs, different accounts) actually
+    // run in parallel across threads.
+    let method_responses = tokio::task::spawn_blocking(move || {
+        let mut method_responses = Vec::with_capacity(req.method_calls.len());
+        for call in req.method_calls {
+            // Run the whole dispatch inside the session lock's closure so the
+            // account private key is only ever touched by reference, never
+            // copied out to a local variable. Account priv and the search
+            // index come from the same locked section (see with_session's
+            // doc) so a text-search filter doesn't need to re-lock the
+            // registry.
+            let response = state.sessions.with_session(
+                &token,
+                |account_id, account_priv, search_index, identity, amk| {
+                    let search_fn = |query: &str| -> common::Result<Vec<i64>> {
+                        search_index.search(
+                            &state.blobs,
+                            &state.metadata,
+                            account_id,
+                            account_priv,
+                            query,
+                        )
+                    };
+                    let ctx = AccountContext {
+                        account_id_str: account_id_str.clone(),
+                        blobs: &state.blobs,
+                        metadata: &state.metadata,
+                        queue: &state.queue_store,
+                        auth_store: &state.auth_store,
                         account_priv,
-                        query,
-                    )
-                };
-                let ctx = AccountContext {
-                    account_id_str: account_id_str.clone(),
-                    blobs: &state.blobs,
-                    metadata: &state.metadata,
-                    queue: &state.queue_store,
-                    auth_store: &state.auth_store,
-                    account_priv,
-                    account_pub: &identity.account_pub,
-                    key_id: identity.key_id,
-                    address: &identity.address,
-                    amk,
-                    max_upload_size: state.max_upload_size,
-                    search: &search_fn,
-                    notifier: &state.notifier,
-                };
-                dispatch(call, &ctx)
-            },
-        );
-        match response {
-            Some(r) => method_responses.push(r),
-            None => return Err(StatusCode::UNAUTHORIZED),
+                        account_pub: &identity.account_pub,
+                        key_id: identity.key_id,
+                        address: &identity.address,
+                        amk,
+                        max_upload_size: state.max_upload_size,
+                        search: &search_fn,
+                        notifier: &state.notifier,
+                    };
+                    dispatch(call, &ctx)
+                },
+            );
+            match response {
+                Some(r) => method_responses.push(r),
+                None => return Err(StatusCode::UNAUTHORIZED),
+            }
         }
-    }
+        Ok(method_responses)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
     Ok(Json(Response { method_responses }))
 }
@@ -353,13 +367,21 @@ pub async fn download(
     headers: HeaderMap,
     Path(blob_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    let resolved = state
-        .sessions
-        .with_account(token, |account_id, account_priv| {
-            resolve_blob(&state, account_id, account_priv, &blob_id)
-        })
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = bearer_token(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?
+        .to_string();
+    // Same reasoning as `jmap_api`: decrypting the message blob and
+    // MIME-parsing it to find one attachment is CPU work, not I/O.
+    let resolved = tokio::task::spawn_blocking(move || {
+        state
+            .sessions
+            .with_account(&token, |account_id, account_priv| {
+                resolve_blob(&state, account_id, account_priv, &blob_id)
+            })
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::UNAUTHORIZED)?;
     let (filename, content_type, bytes) = resolved.ok_or(StatusCode::NOT_FOUND)?;
 
     Ok((
@@ -400,7 +422,9 @@ pub async fn upload(
     Query(query): Query<UploadQuery>,
     body: Bytes,
 ) -> Result<Json<UploadResponse>, StatusCode> {
-    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = bearer_token(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?
+        .to_string();
 
     let filename = query.filename.unwrap_or_else(|| "attachment".to_string());
     let content_type = headers
@@ -427,37 +451,43 @@ pub async fn upload(
     }
 
     let size = body.len() as i64;
-    let result = state.sessions.with_session(
-        token,
-        |account_id, _account_priv, _search_index, identity, _amk| -> Result<UploadResponse, StatusCode> {
-            let (blob_hash, dek_wrap) = delivery::seal_for_account(
-                &state.blobs,
-                &identity.account_pub,
-                identity.key_id,
-                &body,
-            )
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let upload_id = state
-                .metadata
-                .insert_upload(&store::NewUpload {
-                    account_id,
-                    blob_hash: &blob_hash,
-                    dek_wrap: &dek_wrap,
-                    key_id: identity.key_id,
-                    filename: &filename,
-                    content_type: &content_type,
-                    size_bytes: size,
-                    created_at: now_unix(),
-                })
+    // Sealing (crypto) and the metadata insert are the same kind of
+    // synchronous work as `jmap_api`'s dispatch -- off the async task.
+    let result = tokio::task::spawn_blocking(move || {
+        state.sessions.with_session(
+            &token,
+            |account_id, _account_priv, _search_index, identity, _amk| -> Result<UploadResponse, StatusCode> {
+                let (blob_hash, dek_wrap) = delivery::seal_for_account(
+                    &state.blobs,
+                    &identity.account_pub,
+                    identity.key_id,
+                    &body,
+                )
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            Ok(UploadResponse {
-                account_id: account_id.to_string(),
-                blob_id: format!("u{upload_id}"),
-                content_type: content_type.clone(),
-                size,
-            })
-        },
-    );
+                let upload_id = state
+                    .metadata
+                    .insert_upload(&store::NewUpload {
+                        account_id,
+                        blob_hash: &blob_hash,
+                        dek_wrap: &dek_wrap,
+                        key_id: identity.key_id,
+                        filename: &filename,
+                        content_type: &content_type,
+                        size_bytes: size,
+                        created_at: now_unix(),
+                    })
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                Ok(UploadResponse {
+                    account_id: account_id.to_string(),
+                    blob_id: format!("u{upload_id}"),
+                    content_type: content_type.clone(),
+                    size,
+                })
+            },
+        )
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     match result {
         Some(Ok(resp)) => Ok(Json(resp)),

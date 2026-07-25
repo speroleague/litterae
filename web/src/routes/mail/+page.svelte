@@ -95,6 +95,7 @@
 			draftId: email.id,
 			to: addressListLabel(email.to),
 			cc: '',
+			bcc: '',
 			subject: email.subject ?? '',
 			bodyHtml: full?.bodyHtml ?? '',
 			bodyText: full?.bodyText ?? ''

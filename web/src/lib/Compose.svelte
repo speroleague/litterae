@@ -8,6 +8,7 @@
 	import RichTextEditor from './RichTextEditor.svelte';
 
 	let ccOpen = $state(false);
+	let bccOpen = $state(false);
 	let sending = $state(false);
 	let savingDraft = $state(false);
 	let error = $state<string | null>(null);
@@ -17,6 +18,7 @@
 	$effect(() => {
 		if (composeState.open) {
 			ccOpen = composeState.cc.trim().length > 0;
+			bccOpen = composeState.bcc.trim().length > 0;
 			error = null;
 		}
 	});
@@ -44,6 +46,7 @@
 		return {
 			to: parseAddressList(composeState.to),
 			cc: parseAddressList(composeState.cc),
+			bcc: parseAddressList(composeState.bcc),
 			subject: composeState.subject.trim() || undefined,
 			bodyHtml: composeState.bodyHtml,
 			inReplyTo: composeState.draftId ? undefined : (composeState.inReplyTo ?? undefined),
@@ -85,7 +88,7 @@
 		sending = true;
 		try {
 			const input = buildInput();
-			const rcptTo = [...input.to, ...(input.cc ?? [])].map((a) => a.email);
+			const rcptTo = [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])].map((a) => a.email);
 			if (composeState.draftId) {
 				const draft = await updateDraft(token, accountId, composeState.draftId, input);
 				await submitEmail(token, accountId, draft.id, rcptTo);
@@ -157,6 +160,15 @@
 							Cc
 						</button>
 					{/if}
+					{#if !bccOpen}
+						<button
+							onclick={() => (bccOpen = true)}
+							class="shrink-0 text-xs font-medium"
+							style="color: var(--text-faint);"
+						>
+							Bcc
+						</button>
+					{/if}
 				</div>
 				{#if ccOpen}
 					<div class="flex items-center gap-2 px-4 py-2.5" style="border-bottom: 1px solid var(--border);">
@@ -165,6 +177,18 @@
 							type="text"
 							placeholder="cc@example.com"
 							bind:value={composeState.cc}
+							class="min-w-0 flex-1 bg-transparent text-[15px] outline-none"
+							style="color: var(--text);"
+						/>
+					</div>
+				{/if}
+				{#if bccOpen}
+					<div class="flex items-center gap-2 px-4 py-2.5" style="border-bottom: 1px solid var(--border);">
+						<span class="w-8 shrink-0 text-sm" style="color: var(--text-faint);">Bcc</span>
+						<input
+							type="text"
+							placeholder="bcc@example.com"
+							bind:value={composeState.bcc}
 							class="min-w-0 flex-1 bg-transparent text-[15px] outline-none"
 							style="color: var(--text);"
 						/>

@@ -42,6 +42,7 @@
 						draftId: email.id,
 						to: addressListLabel(email.to),
 						cc: '',
+						bcc: '',
 						subject: email.subject ?? '',
 						bodyHtml: email.bodyHtml ?? '',
 						bodyText: email.bodyText ?? ''
@@ -102,6 +103,7 @@
 				draftId: m.id,
 				to: addressListLabel(m.to),
 				cc: '',
+				bcc: '',
 				subject: m.subject ?? '',
 				bodyHtml: m.bodyHtml ?? '',
 				bodyText: m.bodyText ?? ''

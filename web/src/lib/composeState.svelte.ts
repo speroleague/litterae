@@ -21,6 +21,7 @@ class ComposeState {
 	inReplyTo = $state<string | null>(null);
 	to = $state('');
 	cc = $state('');
+	bcc = $state('');
 	subject = $state('');
 	bodyHtml = $state('');
 	attachments = $state<PendingAttachment[]>([]);
@@ -62,6 +63,7 @@ function reset() {
 	composeState.inReplyTo = null;
 	composeState.to = '';
 	composeState.cc = '';
+	composeState.bcc = '';
 	composeState.subject = '';
 	composeState.bodyHtml = '';
 	composeState.attachments = [];
@@ -97,6 +99,7 @@ export function openDraft(opts: {
 	draftId: string;
 	to: string;
 	cc: string;
+	bcc: string;
 	subject: string;
 	bodyHtml: string;
 	bodyText: string;
@@ -105,6 +108,7 @@ export function openDraft(opts: {
 	composeState.draftId = opts.draftId;
 	composeState.to = opts.to;
 	composeState.cc = opts.cc;
+	composeState.bcc = opts.bcc;
 	composeState.subject = opts.subject;
 	composeState.bodyHtml = opts.bodyHtml || (opts.bodyText ? `<p>${escapeHtml(opts.bodyText).split('\n').join('</p><p>')}</p>` : '');
 	composeState.open = true;

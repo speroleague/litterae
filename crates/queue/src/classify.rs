@@ -55,6 +55,19 @@ pub fn classify_connect_failure(detail: String, hard_dns_failure: bool) -> Outco
     }
 }
 
+/// A validated TLSA record existed for a host and no certificate offered
+/// there matched it (RFC 7672 §2.2). Unlike a generic connect failure,
+/// this doesn't heal on retry -- the same mismatched cert will still be
+/// there in five minutes -- so it's always `Permanent`, triggering a DSN
+/// instead of quietly retrying for days.
+pub fn classify_dane_failure(detail: String) -> Outcome {
+    Outcome::Permanent {
+        code: None,
+        status: None,
+        detail,
+    }
+}
+
 fn classify_code(code: u16, status: Option<String>, detail: String) -> Outcome {
     match code / 100 {
         2 => Outcome::Delivered,
@@ -128,6 +141,14 @@ mod tests {
         assert!(matches!(
             classify_connect_failure("connection refused".into(), false),
             Outcome::Transient { .. }
+        ));
+    }
+
+    #[test]
+    fn dane_mismatch_is_always_permanent() {
+        assert!(matches!(
+            classify_dane_failure("no certificate matched TLSA records".into()),
+            Outcome::Permanent { .. }
         ));
     }
 }

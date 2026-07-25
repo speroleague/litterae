@@ -2064,14 +2064,18 @@ dependencies = [
  "mail-builder",
  "mail-send",
  "rand 0.10.2",
+ "rcgen",
  "rsa",
  "rusqlite",
+ "rustls",
  "rustls-pki-types",
+ "sha2",
  "store",
  "tempfile",
  "tokio",
  "tokio-rustls",
  "tracing",
+ "x509-parser",
 ]
 
 [[package]]

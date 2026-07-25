@@ -15,6 +15,7 @@ mail-auth.workspace = true
 mail-builder.workspace = true
 mail-send.workspace = true
 tokio-rustls.workspace = true
+rustls.workspace = true
 rustls-pki-types.workspace = true
 rusqlite.workspace = true
 tokio.workspace = true
@@ -23,6 +24,9 @@ rand.workspace = true
 base64.workspace = true
 futures-util.workspace = true
 rsa.workspace = true
+sha2.workspace = true
+x509-parser.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
+rcgen = "0.14.8"

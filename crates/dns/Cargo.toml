@@ -6,7 +6,7 @@ publish.workspace = true
 
 [dependencies]
 common.workspace = true
-hickory-resolver.workspace = true
+hickory-resolver = { workspace = true, features = ["dnssec-aws-lc-rs"] }
 tracing.workspace = true
 sha2.workspace = true
 hex.workspace = true

@@ -28,7 +28,7 @@ use dns::Resolver;
 use store::{BlobStore, MetadataStore, ROLE_DRAFTS, ROLE_SENT};
 
 use crate::backoff::{next_delay_secs, DELAYED_DSN_THRESHOLD_SECS};
-use crate::classify::{classify_connect_failure, classify_send_result, Outcome};
+use crate::classify::{classify_connect_failure, classify_dane_failure, classify_send_result, Outcome};
 use crate::dsn::{build_dsn, DsnAction, DsnInput, FailedRecipient};
 use crate::scheduled::{ScheduledKind, StoredScheduledEvent};
 use crate::schema::QueueStore;
@@ -82,6 +82,17 @@ struct OutboundRow {
 enum Connected {
     Tls(Box<SmtpClient<TlsStream<TcpStream>>>),
     Plain(SmtpClient<TcpStream>),
+}
+
+enum ConnectOutcome {
+    Connected(Connected),
+    /// Every MX host failed. `dane_required` is true if at least one
+    /// attempted host had a DNSSEC-validated TLSA record (or a TLSA
+    /// lookup that couldn't be trusted) -- `send_unit` uses this to
+    /// classify the aggregate failure as permanent (a DANE mismatch
+    /// won't heal on retry) instead of the usual transient "couldn't
+    /// connect."
+    Failed { dane_required: bool },
 }
 
 impl Worker {
@@ -388,16 +399,24 @@ impl Worker {
             return;
         }
 
-        let Some(connected) = self.connect_opportunistic(&mx_records).await else {
-            self.set_cooldown(domain);
-            for rcpt in rcpts {
-                self.finalize(
-                    rcpt,
-                    &outbound,
-                    classify_connect_failure("could not connect to any MX host".into(), false),
-                );
+        let connected = match self.connect_opportunistic(&mx_records).await {
+            ConnectOutcome::Connected(c) => c,
+            ConnectOutcome::Failed { dane_required } => {
+                self.set_cooldown(domain);
+                let outcome = if dane_required {
+                    classify_dane_failure(
+                        "no certificate offered by any MX host matched its DNSSEC-validated \
+                         TLSA record"
+                            .into(),
+                    )
+                } else {
+                    classify_connect_failure("could not connect to any MX host".into(), false)
+                };
+                for rcpt in rcpts {
+                    self.finalize(rcpt, &outbound, outcome.clone());
+                }
+                return;
             }
-            return;
         };
 
         let sender = outbound.envelope_from.clone();
@@ -412,8 +431,18 @@ impl Worker {
 
     /// Tries each MX in preference order, preferring STARTTLS but falling
     /// back to plaintext when the remote doesn't offer it -- TLS is never
-    /// required for outbound delivery, only preferred.
-    async fn connect_opportunistic(&self, mx_records: &[dns::MxRecord]) -> Option<Connected> {
+    /// required for outbound delivery, only preferred. **Unless** a
+    /// DNSSEC-validated TLSA record exists for that host: then DANE (RFC
+    /// 6698/7671) takes over for that host specifically -- the connection
+    /// must present a certificate matching the pinned SPKI hash or the
+    /// attempt fails outright, with no plaintext (or even valid-but-
+    /// unpinned-TLS) fallback. A DANE failure on one host still tries the
+    /// next MX, same as any other failure; `dane_required` on the
+    /// aggregate `Failed` result only matters once every host is
+    /// exhausted, so `send_unit` can classify the DSN correctly (a DANE
+    /// mismatch won't heal on retry, a plain network failure might).
+    async fn connect_opportunistic(&self, mx_records: &[dns::MxRecord]) -> ConnectOutcome {
+        let mut dane_required = false;
         for mx in mx_records {
             let host = mx.exchange.trim_end_matches('.');
             if host.is_empty() {
@@ -422,18 +451,47 @@ impl Worker {
             let Ok(builder) = SmtpClientBuilder::new(host.to_string(), 25) else {
                 continue;
             };
-            let builder = builder.implicit_tls(false).helo_host(self.hostname.clone());
+            let mut builder = builder.implicit_tls(false).helo_host(self.hostname.clone());
+
+            let dane_verifier = match self.resolver.resolve_tlsa(25, host).await {
+                Ok(records) => crate::dane::DaneVerifier::new(&records),
+                // Couldn't determine whether DANE is required (DNSSEC
+                // validation itself failed) -- can't safely proceed
+                // without it, so treat this host the same as a DANE
+                // mismatch rather than silently falling back to
+                // unauthenticated opportunistic TLS.
+                Err(e) => {
+                    tracing::warn!(error = %e, host, "TLSA lookup failed, treating as DANE-required");
+                    dane_required = true;
+                    continue;
+                }
+            };
+
+            if let Some(verifier) = dane_verifier {
+                dane_required = true;
+                builder.tls_connector =
+                    tokio_rustls::TlsConnector::from(crate::dane::client_config(verifier));
+                // No plaintext/`MissingStartTls` fallback here (unlike
+                // the opportunistic branch below) -- a DANE-protected
+                // host that won't even offer STARTTLS is itself a
+                // downgrade signal, not a reason to proceed unencrypted.
+                if let Ok(client) = builder.connect().await {
+                    return ConnectOutcome::Connected(Connected::Tls(Box::new(client)));
+                }
+                continue;
+            }
+
             match builder.connect().await {
-                Ok(client) => return Some(Connected::Tls(Box::new(client))),
+                Ok(client) => return ConnectOutcome::Connected(Connected::Tls(Box::new(client))),
                 Err(mail_send::Error::MissingStartTls) => {
                     if let Ok(client) = builder.connect_plain().await {
-                        return Some(Connected::Plain(client));
+                        return ConnectOutcome::Connected(Connected::Plain(client));
                     }
                 }
                 Err(_) => {}
             }
         }
-        None
+        ConnectOutcome::Failed { dane_required }
     }
 
     fn finalize(&self, rcpt: &ClaimedRcpt, outbound: &OutboundRow, outcome: Outcome) {

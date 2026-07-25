@@ -1,14 +1,16 @@
 //! DNS lookups the outbound queue needs: MX (RFC 5321 §5) and DANE/TLSA
-//! (RFC 6698) records. TLSA records are resolved and returned but not yet
-//! enforced against the negotiated TLS certificate -- that requires a
-//! custom rustls certificate verifier (RFC 6698 matching-type/DNSSEC-chain
-//! validation) that hasn't been built yet. Callers should treat
-//! `resolve_tlsa` as informational until that lands.
+//! (RFC 6698) records. `resolve_tlsa` DNSSEC-validates (see its doc
+//! comment); actually enforcing the result against a negotiated TLS
+//! certificate is `queue::dane`'s job, not this crate's.
 //!
 //! Also owns generating (not fetching) the two other §8.5 deliverability
 //! records for litterae's own domain(s): MTA-STS policy/DNS record
 //! (`mta_sts`) and the TLS-RPT DNS record (`tls_rpt`).
 
+use hickory_resolver::config::{ResolverConfig, CLOUDFLARE, QUAD9};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::net::{DnsError, NetError};
+use hickory_resolver::proto::dnssec::Proof;
 use hickory_resolver::proto::rr::{RData, RecordType};
 use hickory_resolver::TokioResolver;
 
@@ -42,11 +44,23 @@ fn resolve_err(e: impl std::fmt::Display) -> Error {
 }
 
 impl Resolver {
+    /// Points DNSSEC-validating lookups at Cloudflare (primary) and Quad9
+    /// (fallback) rather than trusting `/etc/resolv.conf` -- some ISP/
+    /// router/container-default resolvers mangle DNSSEC RRs (stripped
+    /// EDNS0, etc.), which would surface as spurious `Proof::Bogus` and
+    /// incorrectly hard-fail DANE-protected delivery. `validate = true`
+    /// does real RRSIG/DNSKEY/DS chain validation locally, from hickory's
+    /// bundled IANA root trust anchors -- this is not "trust the
+    /// upstream's AD bit."
     pub fn new() -> Result<Self> {
-        let inner = TokioResolver::builder_tokio()
-            .map_err(resolve_err)?
-            .build()
-            .map_err(resolve_err)?;
+        let mut config = ResolverConfig::udp_and_tcp(&CLOUDFLARE);
+        config
+            .name_servers
+            .extend(ResolverConfig::udp_and_tcp(&QUAD9).name_servers);
+        let mut builder =
+            TokioResolver::builder_with_config(config, TokioRuntimeProvider::default());
+        builder.options_mut().validate = true;
+        let inner = builder.build().map_err(resolve_err)?;
         Ok(Self { inner })
     }
 
@@ -88,17 +102,45 @@ impl Resolver {
         Ok(records)
     }
 
-    /// Resolves TLSA records for `_{port}._tcp.{hostname}` (RFC 6698 §3).
+    /// Resolves TLSA records for `_{port}._tcp.{hostname}` (RFC 6698 §3),
+    /// DNSSEC-validated (RFC 7671: DANE without a validated chain is
+    /// spoofable by anyone who can inject fake DNS answers, so this is
+    /// not optional). Only records hickory proved `Proof::Secure` are
+    /// returned -- `Insecure`/`Indeterminate` (the overwhelming majority
+    /// of domains, which don't deploy DNSSEC at all) are treated the same
+    /// as "nothing published," matching this function's pre-DNSSEC
+    /// behavior for that common case.
+    ///
+    /// Unlike before, a real resolution problem is no longer silently
+    /// folded into "no TLSA": a lookup `Err` (SERVFAIL, timeout) or a
+    /// record that fails signature validation (`Proof::Bogus` -- a real
+    /// tamper/misconfiguration signal, not a normal outcome) now
+    /// propagates as `Err` rather than degrading to "proceed without
+    /// DANE," which is exactly the failure mode DANE exists to prevent.
     pub async fn resolve_tlsa(&self, port: u16, hostname: &str) -> Result<Vec<TlsaRecord>> {
         let name = format!("_{port}._tcp.{}.", hostname.trim_end_matches('.'));
         let lookup = match self.inner.lookup(name.as_str(), RecordType::TLSA).await {
             Ok(l) => l,
-            Err(_) => return Ok(Vec::new()), // no TLSA published, or NXDOMAIN
+            // Confirmed absent, unsigned-chain form (most domains).
+            Err(NetError::Dns(DnsError::NoRecordsFound(_))) => return Ok(Vec::new()),
+            // Confirmed absent, DNSSEC-validated form -- still fine,
+            // unless the negative proof itself failed validation.
+            Err(NetError::Dns(DnsError::Nsec { proof, .. })) if proof != Proof::Bogus => {
+                return Ok(Vec::new())
+            }
+            Err(e) => return Err(resolve_err(e)),
         };
+
+        if lookup.answers().iter().any(|r| r.proof == Proof::Bogus) {
+            return Err(Error::Config(format!(
+                "DNSSEC validation failed for TLSA records on {hostname}"
+            )));
+        }
 
         Ok(lookup
             .answers()
             .iter()
+            .filter(|r| r.proof == Proof::Secure)
             .filter_map(|r| match &r.data {
                 RData::TLSA(tlsa) => Some(TlsaRecord {
                     cert_usage: u8::from(tlsa.cert_usage),
@@ -164,6 +206,20 @@ mod tests {
         // a real lookup finding it confirms both the query type and the
         // multi-segment concatenation are correct, not just "returns Ok".
         assert!(records.iter().any(|r| r.contains("spf")));
+    }
+
+    #[tokio::test]
+    async fn tlsa_lookup_with_nothing_published_returns_empty_not_error() {
+        // gmail.com doesn't publish TLSA for its MX -- confirms the
+        // DNSSEC-aware resolve_tlsa still treats "nothing published" the
+        // same as before, rather than erroring now that lookups are
+        // DNSSEC-validated. Deliberately not asserting against a specific
+        // DANE-positive domain here (real-world DANE deployments change
+        // over time and would make this flaky) -- `queue::dane`'s tests
+        // cover the positive-match path fully offline instead.
+        let resolver = Resolver::new().unwrap();
+        let records = resolver.resolve_tlsa(25, "gmail-smtp-in.l.google.com").await.unwrap();
+        assert!(records.is_empty());
     }
 
     #[tokio::test]

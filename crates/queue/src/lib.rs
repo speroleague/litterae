@@ -4,6 +4,7 @@
 
 pub mod backoff;
 pub mod classify;
+pub mod dane;
 pub mod dkim;
 pub mod dsn;
 pub mod enqueue;
@@ -14,6 +15,7 @@ pub mod types;
 pub mod worker;
 
 pub use classify::Outcome;
+pub use dane::DaneVerifier;
 pub use dkim::DomainKey;
 pub use enqueue::enqueue;
 pub use query::QueueMetrics;

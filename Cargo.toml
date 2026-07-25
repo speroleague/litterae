@@ -47,6 +47,7 @@ mail-auth = { version = "0.11.1", features = ["generate"] }
 mail-builder = "0.4.4"
 mail-send = "0.6.1"
 rustls = { version = "0.23.41", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+x509-parser = "0.18.1"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "tls12"] }
 rustls-pki-types = "1.15.0"
 axum = "0.8.9"

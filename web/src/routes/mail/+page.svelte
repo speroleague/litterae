@@ -12,7 +12,9 @@
 		DotsThreeVerticalIcon,
 		NotePencilIcon,
 		GearIcon,
-		UsersIcon
+		UsersIcon,
+		BellIcon,
+		BellSlashIcon
 	} from 'phosphor-svelte';
 	import { goto } from '$app/navigation';
 	import { fade } from 'svelte/transition';
@@ -23,15 +25,20 @@
 		setKeyword,
 		moveToMailbox,
 		destroyEmail,
+		snoozeEmail,
+		unsnoozeEmail,
 		KEYWORD_FLAGGED,
 		KEYWORD_SEEN,
 		KEYWORD_DRAFT,
+		KEYWORD_SNOOZED,
+		KEYWORD_NUDGE,
 		DEFAULT_PAGE_SIZE,
 		type EmailObject,
 		type EmailFilter
 	} from '$lib/jmap';
-	import { mailNav, refreshMailboxes, toggleDrawer, FLAGGED_VIEW, UNREAD_VIEW } from '$lib/mailNav.svelte';
+	import { mailNav, refreshMailboxes, toggleDrawer, FLAGGED_VIEW, UNREAD_VIEW, SNOOZED_VIEW } from '$lib/mailNav.svelte';
 	import { openDraft, openNewMessage } from '$lib/composeState.svelte';
+	import { SNOOZE_PRESETS } from '$lib/snoozePresets';
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 
 	// Focuses the search input when it appears, without the accessibility
@@ -64,11 +71,21 @@
 	function activeMailboxName(): string {
 		if (mailNav.activeViewId === FLAGGED_VIEW) return 'Flagged';
 		if (mailNav.activeViewId === UNREAD_VIEW) return 'Unread';
+		if (mailNav.activeViewId === SNOOZED_VIEW) return 'Snoozed';
 		return mailNav.mailboxes.find((m) => m.id === mailNav.activeViewId)?.name ?? 'Inbox';
 	}
 
 	function isFlagged(email: EmailObject): boolean {
 		return email.keywords[KEYWORD_FLAGGED] === true;
+	}
+
+	function isNudged(email: EmailObject): boolean {
+		return email.keywords[KEYWORD_NUDGE] === true;
+	}
+
+	function resurfaceLabel(email: EmailObject): string {
+		if (!email.snoozedUntil) return '';
+		return `Resurfaces ${new Date(email.snoozedUntil * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`;
 	}
 
 	function isSeen(email: EmailObject): boolean {
@@ -112,6 +129,7 @@
 		if (query.trim()) return { text: query.trim() };
 		if (view === FLAGGED_VIEW) return { hasKeyword: KEYWORD_FLAGGED };
 		if (view === UNREAD_VIEW) return { notHasKeyword: KEYWORD_SEEN };
+		if (view === SNOOZED_VIEW) return { hasKeyword: KEYWORD_SNOOZED };
 		return { inMailbox: view };
 	}
 
@@ -213,6 +231,37 @@
 		emails = emails.filter((m) => m.id !== email.id);
 		try {
 			await destroyEmail(token, accountId, email.id);
+			await refreshMailboxes();
+		} catch {
+			emails = [...emails, email];
+		}
+	}
+
+	async function snoozeEmailUntil(e: MouseEvent, email: EmailObject, at: number) {
+		e.preventDefault();
+		e.stopPropagation();
+		closeMenu();
+		const token = session.token;
+		const accountId = session.accountId;
+		if (!token || !accountId) return;
+		emails = emails.filter((m) => m.id !== email.id);
+		try {
+			await snoozeEmail(token, accountId, email.id, at);
+			await refreshMailboxes();
+		} catch {
+			emails = [...emails, email];
+		}
+	}
+
+	async function unsnoozeEmailNow(e: MouseEvent, email: EmailObject) {
+		e.preventDefault();
+		e.stopPropagation();
+		const token = session.token;
+		const accountId = session.accountId;
+		if (!token || !accountId) return;
+		emails = emails.filter((m) => m.id !== email.id);
+		try {
+			await unsnoozeEmail(token, accountId, email.id);
 			await refreshMailboxes();
 		} catch {
 			emails = [...emails, email];
@@ -394,10 +443,13 @@
 								{#if isDraft(email)}
 									<span class="shrink-0 text-xs font-medium" style="color: var(--danger);">Draft</span>
 								{/if}
+								{#if isNudged(email)}
+									<BellIcon size={13} weight="fill" style="color: var(--accent); flex-shrink: 0;" />
+								{/if}
 								<span class="truncate" class:font-semibold={!isSeen(email)}>{email.subject || '(no subject)'}</span>
 							</div>
 							<div class="truncate pl-4 text-sm" style="color: var(--text-muted);">
-								{email.preview}
+								{mailNav.activeViewId === SNOOZED_VIEW ? resurfaceLabel(email) : email.preview}
 							</div>
 							{#if !isDraft(email)}
 								<div class="hover-detail pl-4 text-xs" style="color: var(--text-faint);">
@@ -421,22 +473,33 @@
 						</a>
 						<div class="flex shrink-0 items-center pt-1 pr-1">
 							<div class="quick-actions flex items-center gap-0.5">
-								<button
-									onclick={(e) => archiveEmail(e, email)}
-									aria-label="Archive"
-									class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-[color-mix(in_oklch,var(--accent)_15%,transparent)] hover:text-[var(--accent)]"
-									style="color: var(--text-faint);"
-								>
-									<ArchiveIcon size={16} />
-								</button>
-								<button
-									onclick={(e) => deleteEmail(e, email)}
-									aria-label="Delete"
-									class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] hover:text-[var(--danger)]"
-									style="color: var(--text-faint);"
-								>
-									<TrashIcon size={16} />
-								</button>
+								{#if mailNav.activeViewId === SNOOZED_VIEW}
+									<button
+										onclick={(e) => unsnoozeEmailNow(e, email)}
+										aria-label="Unsnooze now"
+										class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-[color-mix(in_oklch,var(--accent)_15%,transparent)] hover:text-[var(--accent)]"
+										style="color: var(--text-faint);"
+									>
+										<BellSlashIcon size={16} />
+									</button>
+								{:else}
+									<button
+										onclick={(e) => archiveEmail(e, email)}
+										aria-label="Archive"
+										class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-[color-mix(in_oklch,var(--accent)_15%,transparent)] hover:text-[var(--accent)]"
+										style="color: var(--text-faint);"
+									>
+										<ArchiveIcon size={16} />
+									</button>
+									<button
+										onclick={(e) => deleteEmail(e, email)}
+										aria-label="Delete"
+										class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] hover:text-[var(--danger)]"
+										style="color: var(--text-faint);"
+									>
+										<TrashIcon size={16} />
+									</button>
+								{/if}
 							</div>
 							<button
 								onclick={(e) => toggleFlag(e, email)}
@@ -465,24 +528,45 @@
 							></button>
 							<div
 								class="absolute top-11 right-2 z-20 flex flex-col overflow-hidden rounded-[var(--radius-sm)] shadow-lg"
-								style="background: var(--surface); border: 1px solid var(--border); min-width: 160px;"
+								style="background: var(--surface); border: 1px solid var(--border); min-width: 180px;"
 							>
-								<button
-									onclick={(e) => archiveEmail(e, email)}
-									class="flex items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[var(--surface-hover)]"
-									style="color: var(--text);"
-								>
-									<ArchiveIcon size={17} />
-									Archive
-								</button>
-								<button
-									onclick={(e) => deleteEmail(e, email)}
-									class="flex items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[color-mix(in_oklch,var(--danger)_15%,transparent)]"
-									style="color: var(--danger);"
-								>
-									<TrashIcon size={17} />
-									Delete
-								</button>
+								{#if mailNav.activeViewId === SNOOZED_VIEW}
+									<button
+										onclick={(e) => unsnoozeEmailNow(e, email)}
+										class="flex items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[var(--surface-hover)]"
+										style="color: var(--text);"
+									>
+										<BellSlashIcon size={17} />
+										Unsnooze now
+									</button>
+								{:else}
+									<button
+										onclick={(e) => archiveEmail(e, email)}
+										class="flex items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[var(--surface-hover)]"
+										style="color: var(--text);"
+									>
+										<ArchiveIcon size={17} />
+										Archive
+									</button>
+									{#each SNOOZE_PRESETS as preset (preset.label)}
+										<button
+											onclick={(e) => snoozeEmailUntil(e, email, preset.at())}
+											class="flex items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[var(--surface-hover)]"
+											style="color: var(--text);"
+										>
+											<BellIcon size={17} />
+											Snooze: {preset.label}
+										</button>
+									{/each}
+									<button
+										onclick={(e) => deleteEmail(e, email)}
+										class="flex items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[color-mix(in_oklch,var(--danger)_15%,transparent)]"
+										style="color: var(--danger);"
+									>
+										<TrashIcon size={17} />
+										Delete
+									</button>
+								{/if}
 							</div>
 						{/if}
 					</li>

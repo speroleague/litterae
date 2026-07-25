@@ -193,6 +193,19 @@ pub struct EmailObject {
     #[serde(rename = "blockedImageCount")]
     pub blocked_image_count: Option<u32>,
     pub attachments: Vec<EmailAttachment>,
+    /// Unix seconds this message resurfaces at, if it's currently
+    /// snoozed -- `null` otherwise. `email::open_and_parse` always sets
+    /// this to `None`; `api::email_get` fills it in afterward from the
+    /// account's pending `scheduled_events`, since that lookup needs
+    /// `ctx.queue`, which the (blob-store-only) parse step doesn't have.
+    #[serde(rename = "snoozedUntil")]
+    pub snoozed_until: Option<i64>,
+    /// Unix seconds a pending follow-up-nudge reminder is set to check
+    /// this thread at, if one is scheduled and hasn't fired yet. Same
+    /// "filled in by `api::email_get`, not `email::open_and_parse`" story
+    /// as `snoozed_until`.
+    #[serde(rename = "nudgeAt")]
+    pub nudge_at: Option<i64>,
 }
 
 /// Metadata only -- bytes are fetched on demand via `blobId` from

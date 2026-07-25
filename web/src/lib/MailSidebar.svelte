@@ -7,9 +7,10 @@
 		NotePencilIcon,
 		ShieldWarningIcon,
 		FileTextIcon,
-		StarIcon
+		StarIcon,
+		BellIcon
 	} from 'phosphor-svelte';
-	import { mailNav, selectView, FLAGGED_VIEW } from '$lib/mailNav.svelte';
+	import { mailNav, selectView, FLAGGED_VIEW, SNOOZED_VIEW } from '$lib/mailNav.svelte';
 	import { openNewMessage } from '$lib/composeState.svelte';
 
 	const ROLE_ICONS: Record<string, typeof TrayIcon> = {
@@ -61,6 +62,16 @@
 		>
 			<StarIcon size={17} weight={mailNav.activeViewId === FLAGGED_VIEW ? 'fill' : 'regular'} />
 			<span class="flex-1 truncate text-left">Flagged</span>
+		</button>
+		<button
+			onclick={() => selectView(SNOOZED_VIEW)}
+			class="flex items-center gap-3 rounded-[var(--radius-sm)] px-3 py-2.5 text-left text-[14px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+			style={mailNav.activeViewId === SNOOZED_VIEW
+				? 'background: var(--accent); color: white;'
+				: 'color: var(--text-muted);'}
+		>
+			<BellIcon size={17} weight={mailNav.activeViewId === SNOOZED_VIEW ? 'fill' : 'regular'} />
+			<span class="flex-1 truncate text-left">Snoozed</span>
 		</button>
 	</nav>
 </div>

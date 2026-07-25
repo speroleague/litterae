@@ -49,6 +49,22 @@ CREATE TABLE IF NOT EXISTS dkim_keys (
     public_der  BLOB NOT NULL,
     created_at  INTEGER NOT NULL
 );
+
+-- unified scheduler (spec §8.6 / A.8-A.9): reminders/snoozes share the
+-- same wakeup loop as outbound delivery, since both just need a durable
+-- "wake me at time T". `payload` is a bare `m{id}` message reference, not
+-- JSON -- there's nothing else non-sensitive worth storing per event, so
+-- the extra parsing layer the schema comment allows for isn't needed yet.
+CREATE TABLE IF NOT EXISTS scheduled_events (
+    id           INTEGER PRIMARY KEY,
+    account_id   INTEGER NOT NULL,
+    kind         TEXT    NOT NULL,   -- remind | snooze_resurface | followup_nudge
+    fire_at      INTEGER NOT NULL,
+    thread_id    TEXT,               -- for followup_nudge's reply-state check
+    payload      TEXT,               -- the affected message, "m{id}"
+    state        TEXT    NOT NULL DEFAULT 'pending'  -- pending | fired | cancelled
+);
+CREATE INDEX IF NOT EXISTS ix_sched_due ON scheduled_events(state, fire_at);
 "#;
 
 pub(crate) fn storage_err(e: rusqlite::Error) -> Error {

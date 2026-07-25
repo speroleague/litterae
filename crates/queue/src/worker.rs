@@ -25,13 +25,21 @@ use tokio_rustls::client::TlsStream;
 use auth::AuthStore;
 use delivery::{AuthResults, InboundEnvelope, RecipientAccount};
 use dns::Resolver;
-use store::{BlobStore, MetadataStore};
+use store::{BlobStore, MetadataStore, ROLE_DRAFTS, ROLE_SENT};
 
 use crate::backoff::{next_delay_secs, DELAYED_DSN_THRESHOLD_SECS};
 use crate::classify::{classify_connect_failure, classify_send_result, Outcome};
 use crate::dsn::{build_dsn, DsnAction, DsnInput, FailedRecipient};
+use crate::scheduled::{ScheduledKind, StoredScheduledEvent};
 use crate::schema::QueueStore;
 use crate::types::RcptState;
+
+/// JMAP keyword hiding a message until its snooze fires (spec §8.6) --
+/// defined here rather than in `store` (cf. `store::KEYWORD_DRAFT`) since
+/// only this worker and `jmap::api::email_set` ever touch it.
+pub const KEYWORD_SNOOZED: &str = "$snoozed";
+/// Set when a `followup_nudge` fires with no reply seen in the thread.
+pub const KEYWORD_NUDGE: &str = "$nudge";
 
 const BATCH_SIZE: i64 = 100;
 const IDLE_FLOOR: Duration = Duration::from_secs(30);
@@ -105,6 +113,7 @@ impl Worker {
         loop {
             self.reap_stale_claims();
             self.expire_overdue();
+            self.fire_due_scheduled_events();
 
             let claimed = self.claim_batch(now_unix(), BATCH_SIZE);
             if claimed.is_empty() {
@@ -182,6 +191,102 @@ impl Worker {
              AND outbound_id IN (SELECT id FROM outbound WHERE expires_at < ?1)",
             (now,),
         );
+    }
+
+    /// A.6 step 2: cheap, done inline in the main loop rather than farmed
+    /// out to the send-task pool -- neither snooze-resurface nor
+    /// followup-nudge touches the network.
+    fn fire_due_scheduled_events(&self) {
+        let due = match self.queue.due_scheduled_events(now_unix()) {
+            Ok(due) => due,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to load due scheduled events");
+                return;
+            }
+        };
+        for ev in due {
+            match ScheduledKind::from_db_str(&ev.kind) {
+                Some(ScheduledKind::SnoozeResurface) => self.fire_snooze_resurface(&ev),
+                Some(ScheduledKind::FollowupNudge) => self.fire_followup_nudge(&ev),
+                // "remind" has no v1 UI hooked up to create it yet, and an
+                // unrecognized kind shouldn't loop forever re-firing --
+                // both just get marked fired with no side effect.
+                _ => {
+                    let _ = self.queue.mark_event_fired(ev.id);
+                }
+            }
+        }
+    }
+
+    fn scheduled_message_row_id(ev: &StoredScheduledEvent) -> Option<i64> {
+        ev.payload.as_deref()?.strip_prefix('m')?.parse().ok()
+    }
+
+    /// Clears the hiding keyword and pushes an SSE nudge -- resurfacing is
+    /// exactly "the message was hidden until now" per spec §8.6, so there's
+    /// nothing else to reverse.
+    fn fire_snooze_resurface(&self, ev: &StoredScheduledEvent) {
+        if let Some(row_id) = Self::scheduled_message_row_id(ev) {
+            if let Ok(Some(msg)) = self.metadata.get_message(row_id) {
+                let kept: Vec<&str> = msg
+                    .keywords
+                    .split(',')
+                    .filter(|k| !k.is_empty() && *k != KEYWORD_SNOOZED)
+                    .collect();
+                let _ = self
+                    .metadata
+                    .update_message(row_id, None, Some(&kept.join(",")));
+                self.notifier.notify(ev.account_id);
+            }
+        }
+        let _ = self.queue.mark_event_fired(ev.id);
+    }
+
+    /// "Nudge if no reply by T" (spec A.9): reads only thread *metadata*
+    /// (mailbox membership, not bodies), so this works correctly even
+    /// while the account is locked. A message landing in the thread
+    /// afterward that isn't in Sent/Drafts counts as a reply; anything
+    /// else (including the account replying to itself) silently cancels
+    /// the nudge rather than firing it.
+    fn fire_followup_nudge(&self, ev: &StoredScheduledEvent) {
+        // Sourced from the event row rather than the loaded message's own
+        // `thread_id` -- keeps the check correct even if the anchor
+        // message itself were later moved, which `thread_id`'s doc
+        // comment in the schema is there for.
+        let Some(thread_id) = ev.thread_id.as_deref().and_then(|t| t.parse::<i64>().ok()) else {
+            let _ = self.queue.mark_event_fired(ev.id);
+            return;
+        };
+        if let Some(row_id) = Self::scheduled_message_row_id(ev) {
+            if let Ok(Some(msg)) = self.metadata.get_message(row_id) {
+                let sent = self.metadata.ensure_mailbox(ev.account_id, ROLE_SENT).ok();
+                let drafts = self.metadata.ensure_mailbox(ev.account_id, ROLE_DRAFTS).ok();
+                let replied = self
+                    .metadata
+                    .messages_in_thread(ev.account_id, thread_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|m| {
+                        m.id != row_id
+                            && sent.as_ref().is_none_or(|mb| m.mailbox_id != mb.id)
+                            && drafts.as_ref().is_none_or(|mb| m.mailbox_id != mb.id)
+                    });
+                if replied {
+                    let _ = self.queue.mark_event_cancelled(ev.id);
+                    return;
+                }
+                if !msg.keywords.split(',').any(|k| k == KEYWORD_NUDGE) {
+                    let mut kept: Vec<&str> =
+                        msg.keywords.split(',').filter(|k| !k.is_empty()).collect();
+                    kept.push(KEYWORD_NUDGE);
+                    let _ = self
+                        .metadata
+                        .update_message(row_id, None, Some(&kept.join(",")));
+                }
+                self.notifier.notify(ev.account_id);
+            }
+        }
+        let _ = self.queue.mark_event_fired(ev.id);
     }
 
     fn release_to_ready(&self, rcpts: &[ClaimedRcpt]) {
@@ -817,6 +922,146 @@ mod tests {
         assert!(!worker.is_cooling_down("slow.example"));
         worker.set_cooldown("slow.example");
         assert!(worker.is_cooling_down("slow.example"));
+    }
+
+    fn insert_test_message(worker: &Worker, account_id: i64, mailbox_id: i64, thread_id: i64, keywords: &str) -> i64 {
+        worker
+            .metadata
+            .insert_message(&store::NewMessage {
+                account_id,
+                mailbox_id,
+                thread_id,
+                blob_hash: "deadbeef",
+                dek_wrap: b"wrapped",
+                mail_from: "someone@example.net",
+                rcpt_to: "alice@example.com",
+                remote_ip: "203.0.113.5",
+                size_bytes: 10,
+                spf_result: "pass",
+                dkim_result: "pass",
+                dmarc_result: "pass",
+                received_at: now_unix(),
+                keywords,
+                message_id_header: None,
+                in_reply_to: None,
+                references_header: None,
+                subject_hash: None,
+                spam_score: None,
+                av_clean: None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn snooze_resurface_clears_keyword_and_marks_fired() {
+        let (worker, account_id) = make_worker();
+        let inbox = worker.metadata.ensure_mailbox(account_id, store::ROLE_INBOX).unwrap();
+        let msg_id = insert_test_message(&worker, account_id, inbox.id, 1, "$seen,$snoozed");
+        let ev_id = worker
+            .queue
+            .insert_scheduled_event(&crate::scheduled::NewScheduledEvent {
+                account_id,
+                kind: ScheduledKind::SnoozeResurface,
+                fire_at: now_unix() - 10,
+                thread_id: Some("1"),
+                payload: Some(&format!("m{msg_id}")),
+            })
+            .unwrap();
+
+        worker.fire_due_scheduled_events();
+
+        let stored = worker.metadata.get_message(msg_id).unwrap().unwrap();
+        assert_eq!(stored.keywords, "$seen");
+        assert!(worker.queue.due_scheduled_events(now_unix()).unwrap().is_empty());
+        assert!(worker
+            .queue
+            .pending_events_for_account(account_id, ScheduledKind::SnoozeResurface)
+            .unwrap()
+            .is_empty());
+        let _ = ev_id;
+    }
+
+    #[test]
+    fn followup_nudge_fires_when_no_reply_landed_in_the_thread() {
+        let (worker, account_id) = make_worker();
+        let sent = worker.metadata.ensure_mailbox(account_id, store::ROLE_SENT).unwrap();
+        let msg_id = insert_test_message(&worker, account_id, sent.id, 5, "");
+        worker
+            .queue
+            .insert_scheduled_event(&crate::scheduled::NewScheduledEvent {
+                account_id,
+                kind: ScheduledKind::FollowupNudge,
+                fire_at: now_unix() - 10,
+                thread_id: Some("5"),
+                payload: Some(&format!("m{msg_id}")),
+            })
+            .unwrap();
+
+        worker.fire_due_scheduled_events();
+
+        let stored = worker.metadata.get_message(msg_id).unwrap().unwrap();
+        assert!(stored.keywords.split(',').any(|k| k == KEYWORD_NUDGE));
+        assert!(worker.queue.due_scheduled_events(now_unix()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn followup_nudge_cancels_silently_when_a_reply_already_landed() {
+        let (worker, account_id) = make_worker();
+        let sent = worker.metadata.ensure_mailbox(account_id, store::ROLE_SENT).unwrap();
+        let inbox = worker.metadata.ensure_mailbox(account_id, store::ROLE_INBOX).unwrap();
+        let msg_id = insert_test_message(&worker, account_id, sent.id, 9, "");
+        // A later message in the same thread, landing anywhere but
+        // Sent/Drafts, counts as a reply.
+        insert_test_message(&worker, account_id, inbox.id, 9, "");
+        worker
+            .queue
+            .insert_scheduled_event(&crate::scheduled::NewScheduledEvent {
+                account_id,
+                kind: ScheduledKind::FollowupNudge,
+                fire_at: now_unix() - 10,
+                thread_id: Some("9"),
+                payload: Some(&format!("m{msg_id}")),
+            })
+            .unwrap();
+
+        worker.fire_due_scheduled_events();
+
+        let stored = worker.metadata.get_message(msg_id).unwrap().unwrap();
+        assert!(!stored.keywords.split(',').any(|k| k == KEYWORD_NUDGE));
+        assert!(worker.queue.due_scheduled_events(now_unix()).unwrap().is_empty());
+        assert!(worker
+            .queue
+            .pending_events_for_account(account_id, ScheduledKind::FollowupNudge)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn followup_nudge_ignores_the_accounts_own_later_sent_message() {
+        let (worker, account_id) = make_worker();
+        let sent = worker.metadata.ensure_mailbox(account_id, store::ROLE_SENT).unwrap();
+        let msg_id = insert_test_message(&worker, account_id, sent.id, 3, "");
+        // Sending another message into the same thread yourself doesn't
+        // count as "they replied."
+        insert_test_message(&worker, account_id, sent.id, 3, "");
+        worker
+            .queue
+            .insert_scheduled_event(&crate::scheduled::NewScheduledEvent {
+                account_id,
+                kind: ScheduledKind::FollowupNudge,
+                fire_at: now_unix() - 10,
+                thread_id: Some("3"),
+                payload: Some(&format!("m{msg_id}")),
+            })
+            .unwrap();
+
+        worker.fire_due_scheduled_events();
+
+        let stored = worker.metadata.get_message(msg_id).unwrap().unwrap();
+        assert!(
+            stored.keywords.split(',').any(|k| k == KEYWORD_NUDGE),
+            "own later Sent message must not count as a reply"
+        );
     }
 
     /// Drives a scripted plaintext SMTP dialog: greet, accept EHLO, accept

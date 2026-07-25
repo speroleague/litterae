@@ -47,6 +47,11 @@ export interface EmailObject {
 	/** Remote images stripped pending explicit reveal; null iff bodyHtml is null. */
 	blockedImageCount: number | null;
 	attachments: EmailAttachment[];
+	/** Unix seconds this message resurfaces at, if it's currently snoozed. */
+	snoozedUntil: number | null;
+	/** Unix seconds a pending "remind me if no reply" check is scheduled
+	 * for, if one is set and hasn't fired yet. */
+	nudgeAt: number | null;
 }
 
 export interface EmailAttachment {
@@ -72,6 +77,8 @@ export interface MailboxObject {
 export const KEYWORD_FLAGGED = '$flagged';
 export const KEYWORD_SEEN = '$seen';
 export const KEYWORD_DRAFT = '$draft';
+export const KEYWORD_SNOOZED = '$snoozed';
+export const KEYWORD_NUDGE = '$nudge';
 
 export interface EmailFilter {
 	inMailbox?: string;
@@ -173,7 +180,8 @@ const LIST_ROW_PROPERTIES = [
 	'receivedAt',
 	'preview',
 	'spamScore',
-	'avClean'
+	'avClean',
+	'snoozedUntil'
 ];
 
 export async function getEmails(
@@ -252,6 +260,41 @@ export async function moveToMailbox(
  */
 export async function destroyEmail(token: string, accountId: string, emailId: string): Promise<void> {
 	await callApi(token, [['Email/set', { accountId, destroy: [emailId] }, 'c1']]);
+}
+
+/** Hides a message until `until` (unix seconds), then resurfaces it via
+ * SSE push (spec §8.6) -- sets `$snoozed` and schedules the wakeup in one
+ * call. */
+export async function snoozeEmail(token: string, accountId: string, emailId: string, until: number): Promise<void> {
+	await callApi(token, [
+		[
+			'Email/set',
+			{ accountId, update: { [emailId]: { 'keywords/$snoozed': true, snoozeUntil: until } } },
+			'c1'
+		]
+	]);
+}
+
+/** Manually resurfaces a snoozed message before its scheduled time. */
+export async function unsnoozeEmail(token: string, accountId: string, emailId: string): Promise<void> {
+	await callApi(token, [
+		[
+			'Email/set',
+			{ accountId, update: { [emailId]: { 'keywords/$snoozed': false, snoozeUntil: null } } },
+			'c1'
+		]
+	]);
+}
+
+/** "Remind me if no reply by `at`" (unix seconds) -- if the thread has no
+ * new non-draft, non-Sent message by then, the message gets `$nudge` and
+ * a push notification; if it does, the reminder cancels itself silently. */
+export async function setNudge(token: string, accountId: string, emailId: string, at: number): Promise<void> {
+	await callApi(token, [['Email/set', { accountId, update: { [emailId]: { nudgeAt: at } } }, 'c1']]);
+}
+
+export async function clearNudge(token: string, accountId: string, emailId: string): Promise<void> {
+	await callApi(token, [['Email/set', { accountId, update: { [emailId]: { nudgeAt: null } } }, 'c1']]);
 }
 
 export interface ComposeAddress {

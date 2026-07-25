@@ -17,6 +17,7 @@ import { session } from './session.svelte';
 // mailbox at once (Inbox+Archive+Sent+...), same as Flagged already does.
 export const FLAGGED_VIEW = '__flagged__';
 export const UNREAD_VIEW = '__unread__';
+export const SNOOZED_VIEW = '__snoozed__';
 
 class MailNavState {
 	mailboxes = $state<MailboxObject[]>([]);

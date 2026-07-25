@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-use queue::QueueStore;
+use queue::{NewScheduledEvent, QueueStore, ScheduledKind};
 use store::{
     normalize_subject, BlobStore, MetadataStore, NewMessage, ThreadMatch, KEYWORD_DRAFT,
     ROLE_DRAFTS, ROLE_SENT, ROLE_TRASH,
@@ -100,6 +100,29 @@ fn contact_row_id(id: &str) -> Option<i64> {
     id.strip_prefix('c').and_then(|n| n.parse::<i64>().ok())
 }
 
+/// `StoredMessage.keywords` is a comma-joined token list -- this checks
+/// for one exact token, same convention `messages_with_keyword`'s SQL
+/// `LIKE` uses, just done in Rust for an already-fetched row.
+fn has_keyword(keywords: &str, keyword: &str) -> bool {
+    keywords.split(',').any(|k| k == keyword)
+}
+
+/// Cancels any pending scheduled event of `kind` whose payload is this
+/// message -- used both to enforce "replacing a snooze/nudge cancels the
+/// old one" and to implement `snoozeUntil`/`nudgeAt: null` (manual
+/// cancel). A full per-account scan filtered here in Rust, same
+/// personal-scale tradeoff as `queue::QueueStore::pending_events_for_account`
+/// documents.
+fn cancel_pending_events(ctx: &AccountContext, account_id: i64, kind: ScheduledKind, message_id: &str) {
+    if let Ok(events) = ctx.queue.pending_events_for_account(account_id, kind) {
+        for ev in events {
+            if ev.payload.as_deref() == Some(message_id) {
+                let _ = ctx.queue.mark_event_cancelled(ev.id);
+            }
+        }
+    }
+}
+
 fn mailbox_get(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> MethodResponse {
     let args: MailboxGetArgs = match serde_json::from_value(args) {
         Ok(a) => a,
@@ -168,7 +191,16 @@ fn email_query(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> 
         }
     } else if let Some(keyword) = filter.not_has_keyword {
         match ctx.metadata.messages_without_keyword(account_id, &keyword) {
-            Ok(m) => m.into_iter().map(|m| m.id).collect(),
+            // A snoozed message is hidden everywhere except the Snoozed
+            // view itself (which queries `hasKeyword: $snoozed` directly,
+            // never landing here), so it's excluded from this branch too
+            // -- e.g. "unread" shouldn't resurface something the user
+            // explicitly hid until later.
+            Ok(m) => m
+                .into_iter()
+                .filter(|m| !has_keyword(&m.keywords, queue::KEYWORD_SNOOZED))
+                .map(|m| m.id)
+                .collect(),
             Err(e) => return error_response("serverFail", &e.to_string(), call_id),
         }
     } else {
@@ -180,7 +212,13 @@ fn email_query(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> 
             },
         };
         match ctx.metadata.messages_in_mailbox(account_id, mailbox_id) {
-            Ok(m) => m.into_iter().map(|m| m.id).collect(),
+            // Snoozed = hidden from every normal mailbox listing until it
+            // resurfaces (spec §8.6).
+            Ok(m) => m
+                .into_iter()
+                .filter(|m| !has_keyword(&m.keywords, queue::KEYWORD_SNOOZED))
+                .map(|m| m.id)
+                .collect(),
             Err(e) => return error_response("serverFail", &e.to_string(), call_id),
         }
     };
@@ -218,6 +256,7 @@ fn email_get(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
     if args.account_id != ctx.account_id_str {
         return error_response("accountNotFound", "unknown accountId", call_id);
     }
+    let account_id = parse_account_id(ctx);
     let properties: Option<HashSet<String>> =
         args.properties.map(|p| p.into_iter().collect());
 
@@ -262,6 +301,35 @@ fn email_get(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
         match result {
             Ok(obj) => list.push(obj),
             Err(id) => not_found.push(id),
+        }
+    }
+
+    // `email::open_and_parse` can't see `ctx.queue`, so `snoozedUntil`/
+    // `nudgeAt` are filled in here from the account's pending scheduled
+    // events -- cheap (two small per-account scans, not per-message)
+    // compared to decrypt/parse above.
+    if let Ok(pending) = ctx
+        .queue
+        .pending_events_for_account(account_id, ScheduledKind::SnoozeResurface)
+    {
+        let fire_at_by_message: HashMap<&str, i64> = pending
+            .iter()
+            .filter_map(|ev| ev.payload.as_deref().map(|p| (p, ev.fire_at)))
+            .collect();
+        for obj in &mut list {
+            obj.snoozed_until = fire_at_by_message.get(obj.id.as_str()).copied();
+        }
+    }
+    if let Ok(pending) = ctx
+        .queue
+        .pending_events_for_account(account_id, ScheduledKind::FollowupNudge)
+    {
+        let fire_at_by_message: HashMap<&str, i64> = pending
+            .iter()
+            .filter_map(|ev| ev.payload.as_deref().map(|p| (p, ev.fire_at)))
+            .collect();
+        for obj in &mut list {
+            obj.nudge_at = fire_at_by_message.get(obj.id.as_str()).copied();
         }
     }
 
@@ -370,6 +438,32 @@ fn email_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> Me
                     current_keywords.retain(|k| k != keyword);
                 }
                 new_keywords = Some(current_keywords.clone());
+            } else if path == "snoozeUntil" {
+                // The `$snoozed` keyword itself is set/cleared by the
+                // client via the existing `keywords/$snoozed` patch path
+                // in the same update call -- this only owns the wakeup
+                // timer, replacing any prior pending one for this message.
+                cancel_pending_events(ctx, account_id, ScheduledKind::SnoozeResurface, id);
+                if let Some(fire_at) = value.as_i64() {
+                    let _ = ctx.queue.insert_scheduled_event(&NewScheduledEvent {
+                        account_id,
+                        kind: ScheduledKind::SnoozeResurface,
+                        fire_at,
+                        thread_id: Some(&existing.thread_id.to_string()),
+                        payload: Some(id.as_str()),
+                    });
+                }
+            } else if path == "nudgeAt" {
+                cancel_pending_events(ctx, account_id, ScheduledKind::FollowupNudge, id);
+                if let Some(fire_at) = value.as_i64() {
+                    let _ = ctx.queue.insert_scheduled_event(&NewScheduledEvent {
+                        account_id,
+                        kind: ScheduledKind::FollowupNudge,
+                        fire_at,
+                        thread_id: Some(&existing.thread_id.to_string()),
+                        payload: Some(id.as_str()),
+                    });
+                }
             }
         }
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { CaretLeftIcon, StarIcon, ArchiveIcon, TrashIcon, ArrowBendUpLeftIcon, ArrowElbowDownRightIcon, FileIcon, DownloadSimpleIcon } from 'phosphor-svelte';
+	import { CaretLeftIcon, StarIcon, ArchiveIcon, TrashIcon, ArrowBendUpLeftIcon, ArrowElbowDownRightIcon, FileIcon, DownloadSimpleIcon, BellIcon, BellSlashIcon, XIcon } from 'phosphor-svelte';
 	import { session } from '$lib/session.svelte';
 	import {
 		getEmails,
@@ -11,13 +11,19 @@
 		getThreadEmailIds,
 		downloadAttachment,
 		formatFileSize,
+		snoozeEmail,
+		unsnoozeEmail,
+		setNudge,
+		clearNudge,
 		KEYWORD_FLAGGED,
 		KEYWORD_SEEN,
 		KEYWORD_DRAFT,
+		KEYWORD_NUDGE,
 		type EmailObject
 	} from '$lib/jmap';
 	import { mailNav, refreshMailboxes, bumpRefresh } from '$lib/mailNav.svelte';
 	import { openReply, openDraft } from '$lib/composeState.svelte';
+	import { SNOOZE_PRESETS, NUDGE_PRESETS } from '$lib/snoozePresets';
 	import MailBodyFrame from '$lib/MailBodyFrame.svelte';
 	import AddressChip from '$lib/AddressChip.svelte';
 
@@ -26,6 +32,7 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
+	let reminderMenuOpen = $state(false);
 
 	$effect(() => {
 		const token = session.token;
@@ -150,6 +157,81 @@
 		}
 	}
 
+	function isOwnSentMessage(): boolean {
+		const from = email?.from[0]?.email?.toLowerCase();
+		return !!from && !!session.address && from === session.address.toLowerCase();
+	}
+
+	async function snoozeUntil(at: number) {
+		const token = session.token;
+		const accountId = session.accountId;
+		if (!token || !accountId || !email) return;
+		reminderMenuOpen = false;
+		try {
+			await snoozeEmail(token, accountId, email.id, at);
+			email.snoozedUntil = at;
+			bumpRefresh();
+		} catch {
+			error = 'Could not snooze this message.';
+		}
+	}
+
+	async function unsnoozeNow() {
+		const token = session.token;
+		const accountId = session.accountId;
+		if (!token || !accountId || !email) return;
+		reminderMenuOpen = false;
+		try {
+			await unsnoozeEmail(token, accountId, email.id);
+			email.snoozedUntil = null;
+			bumpRefresh();
+		} catch {
+			error = 'Could not unsnooze this message.';
+		}
+	}
+
+	async function remindIfNoReply(at: number) {
+		const token = session.token;
+		const accountId = session.accountId;
+		if (!token || !accountId || !email) return;
+		reminderMenuOpen = false;
+		try {
+			await setNudge(token, accountId, email.id, at);
+			email.nudgeAt = at;
+		} catch {
+			error = 'Could not set that reminder.';
+		}
+	}
+
+	async function cancelReminder() {
+		const token = session.token;
+		const accountId = session.accountId;
+		if (!token || !accountId || !email) return;
+		reminderMenuOpen = false;
+		try {
+			await clearNudge(token, accountId, email.id);
+			email.nudgeAt = null;
+		} catch {
+			error = 'Could not cancel that reminder.';
+		}
+	}
+
+	async function dismissNudgeBadge() {
+		const token = session.token;
+		const accountId = session.accountId;
+		if (!token || !accountId || !email) return;
+		email.keywords = { ...email.keywords, [KEYWORD_NUDGE]: false };
+		try {
+			await setKeyword(token, accountId, email.id, KEYWORD_NUDGE, false);
+		} catch {
+			if (email) email.keywords = { ...email.keywords, [KEYWORD_NUDGE]: true };
+		}
+	}
+
+	function reminderTimeLabel(unixSeconds: number): string {
+		return new Date(unixSeconds * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+	}
+
 	async function deleteEmail() {
 		const token = session.token;
 		const accountId = session.accountId;
@@ -221,6 +303,77 @@
 				>
 					<StarIcon size={19} weight={isFlagged() ? 'fill' : 'regular'} />
 				</button>
+				<div class="relative">
+					<button
+						onclick={() => (reminderMenuOpen = !reminderMenuOpen)}
+						aria-label="Snooze or set a reminder"
+						aria-expanded={reminderMenuOpen}
+						class="flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-[var(--surface-hover)]"
+						style="color: {email.snoozedUntil || email.nudgeAt ? 'var(--accent)' : 'var(--text-muted)'};"
+					>
+						<BellIcon size={19} weight={email.snoozedUntil || email.nudgeAt ? 'fill' : 'regular'} />
+					</button>
+					{#if reminderMenuOpen}
+						<button
+							aria-label="Close menu"
+							class="fixed inset-0 z-10 cursor-default"
+							onclick={() => (reminderMenuOpen = false)}
+						></button>
+						<div
+							class="absolute top-11 right-0 z-20 flex flex-col overflow-hidden rounded-[var(--radius-sm)] shadow-lg"
+							style="background: var(--surface); border: 1px solid var(--border); min-width: 220px;"
+						>
+							{#if email.snoozedUntil}
+								<button
+									onclick={unsnoozeNow}
+									class="flex items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[var(--surface-hover)]"
+									style="color: var(--text);"
+								>
+									<BellSlashIcon size={17} />
+									Unsnooze (was {reminderTimeLabel(email.snoozedUntil)})
+								</button>
+							{:else}
+								<div class="px-4 pt-2.5 pb-1 text-xs font-medium tracking-wide uppercase" style="color: var(--text-faint);">Snooze</div>
+								{#each SNOOZE_PRESETS as preset (preset.label)}
+									<button
+										onclick={() => snoozeUntil(preset.at())}
+										class="flex items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[var(--surface-hover)]"
+										style="color: var(--text);"
+									>
+										<BellIcon size={17} />
+										{preset.label}
+									</button>
+								{/each}
+							{/if}
+							{#if isOwnSentMessage()}
+								<div class="mt-1" style="border-top: 1px solid var(--border);">
+									{#if email.nudgeAt}
+										<button
+											onclick={cancelReminder}
+											class="flex w-full items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[var(--surface-hover)]"
+											style="color: var(--text);"
+										>
+											<BellSlashIcon size={17} />
+											Cancel reminder ({reminderTimeLabel(email.nudgeAt)})
+										</button>
+									{:else}
+										<div class="px-4 pt-2.5 pb-1 text-xs font-medium tracking-wide uppercase" style="color: var(--text-faint);">Remind if no reply</div>
+										{#each NUDGE_PRESETS as preset (preset.label)}
+											<button
+												onclick={() => remindIfNoReply(preset.at())}
+												class="flex items-center gap-2.5 px-4 py-3 text-left text-[14px] transition-colors hover:bg-[var(--surface-hover)]"
+												style="color: var(--text);"
+											>
+												<BellIcon size={17} />
+												{preset.label}
+											</button>
+										{/each}
+									{/if}
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</div>
 				<button
 					onclick={archiveEmail}
 					disabled={busy}
@@ -280,6 +433,23 @@
 						{fullDate(parentEmail.receivedAt)}
 					</span>
 				</a>
+			{/if}
+			{#if email.keywords[KEYWORD_NUDGE]}
+				<div
+					class="mb-4 flex items-center gap-2.5 rounded-[var(--radius)] px-3.5 py-2.5 text-sm"
+					style="background: var(--surface-sunk); border: 1px solid var(--border); max-width: 90ch;"
+				>
+					<BellIcon size={17} weight="fill" style="color: var(--accent); flex-shrink: 0;" />
+					<span class="flex-1" style="color: var(--text);">No reply yet.</span>
+					<button
+						onclick={dismissNudgeBadge}
+						aria-label="Dismiss reminder"
+						class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--surface-hover)]"
+						style="color: var(--text-faint);"
+					>
+						<XIcon size={14} />
+					</button>
+				</div>
 			{/if}
 			{#if email.bodyHtml}
 				<MailBodyFrame bodyHtml={email.bodyHtml} blockedImageCount={email.blockedImageCount ?? 0} />

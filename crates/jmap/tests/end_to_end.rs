@@ -967,3 +967,187 @@ async fn contact_crud_round_trip_and_rejects_duplicate_email() {
     let body = json_body(resp).await;
     assert!(body["methodResponses"][0][1]["list"].as_array().unwrap().is_empty());
 }
+
+/// `snoozeUntil`/`nudgeAt` (spec §8.6) over the real HTTP surface: setting
+/// either schedules a `scheduled_events` row (verified by querying the
+/// same `QueueStore` handle the router was built with -- the actual
+/// worker loop that fires them lives in the `queue` crate and is tested
+/// there), and a pending snooze hides the message from the default
+/// mailbox query until cancelled.
+#[tokio::test]
+async fn snooze_and_nudge_schedule_events_and_snooze_hides_from_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::open(tmp.path()).unwrap());
+    let metadata = Arc::new(MetadataStore::open_in_memory().unwrap());
+    let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
+    let queue_store = Arc::new(queue::QueueStore::open_in_memory().unwrap());
+    let cfg = fast_argon2();
+
+    let account = auth_store
+        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .unwrap();
+
+    delivery::deliver(
+        &blobs,
+        &metadata,
+        &RecipientAccount {
+            id: account.id,
+            account_pub: account.account_pub,
+            key_id: account.key_id,
+        },
+        &InboundEnvelope {
+            mail_from: "sender@example.net".into(),
+            rcpt_to: "alice@example.com".into(),
+            remote_ip: "203.0.113.5".parse().unwrap(),
+        },
+        &AuthResults {
+            spf: "pass".into(),
+            dkim: "pass".into(),
+            dmarc: "pass".into(),
+        },
+        b"From: sender@example.net\r\nTo: alice@example.com\r\nSubject: Snooze me\r\n\r\nBody.\r\n",
+        1_700_000_000,
+        None,
+        delivery::ScanMetadata::default(),
+    )
+    .unwrap();
+
+    let state = AppState::new(
+        auth_store,
+        blobs,
+        metadata,
+        Arc::new(audit::AuditStore::open_in_memory().unwrap()),
+        Arc::new(cfg),
+        queue_store.clone(),
+        Arc::new(common::changes::ChangeNotifier::new()),
+        None,
+        25 * 1024 * 1024,
+    );
+    let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+    ));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/unlock")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "local_part": "alice",
+                "domain": "example.com",
+                "password": "correct horse battery staple",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    let token = body["token"].as_str().unwrap().to_string();
+    let account_id = body["accountId"].as_str().unwrap().to_string();
+
+    let call = |method_calls: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri("/jmap/api")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(method_calls.to_string()))
+            .unwrap()
+    };
+
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [["Email/query", { "accountId": account_id }, "q1"]]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    let email_id = body["methodResponses"][0][1]["ids"][0].as_str().unwrap().to_string();
+
+    // Snooze: sets $snoozed (client's own responsibility, same call) and
+    // schedules a snooze_resurface event.
+    let fire_at = 1_700_100_000i64;
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [[
+            "Email/set",
+            { "accountId": account_id, "update": { (email_id.clone()): { "keywords/$snoozed": true, "snoozeUntil": fire_at } } },
+            "r1"
+        ]]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert!(body["methodResponses"][0][1]["updated"].get(&email_id).is_some());
+
+    let pending = queue_store
+        .pending_events_for_account(account.id, queue::ScheduledKind::SnoozeResurface)
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].fire_at, fire_at);
+    assert_eq!(pending[0].payload.as_deref(), Some(email_id.as_str()));
+
+    // The default mailbox query no longer shows it.
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [["Email/query", { "accountId": account_id }, "q2"]]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert!(body["methodResponses"][0][1]["ids"].as_array().unwrap().is_empty());
+
+    // Email/get reports snoozedUntil.
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [["Email/get", { "accountId": account_id, "ids": [email_id.clone()] }, "g1"]]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert_eq!(body["methodResponses"][0][1]["list"][0]["snoozedUntil"], fire_at);
+
+    // A nudge can be scheduled independently of the snooze.
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [[
+            "Email/set",
+            { "accountId": account_id, "update": { (email_id.clone()): { "nudgeAt": fire_at } } },
+            "r2"
+        ]]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert!(body["methodResponses"][0][1]["updated"].get(&email_id).is_some());
+    let pending_nudges = queue_store
+        .pending_events_for_account(account.id, queue::ScheduledKind::FollowupNudge)
+        .unwrap();
+    assert_eq!(pending_nudges.len(), 1);
+
+    // Cancelling both (null) clears the pending events and un-hides the
+    // message from the default query.
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [[
+            "Email/set",
+            { "accountId": account_id, "update": { (email_id.clone()): { "keywords/$snoozed": false, "snoozeUntil": null, "nudgeAt": null } } },
+            "r3"
+        ]]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert!(body["methodResponses"][0][1]["updated"].get(&email_id).is_some());
+
+    assert!(queue_store
+        .pending_events_for_account(account.id, queue::ScheduledKind::SnoozeResurface)
+        .unwrap()
+        .is_empty());
+    assert!(queue_store
+        .pending_events_for_account(account.id, queue::ScheduledKind::FollowupNudge)
+        .unwrap()
+        .is_empty());
+
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [["Email/query", { "accountId": account_id }, "q3"]]
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert_eq!(body["methodResponses"][0][1]["ids"].as_array().unwrap().len(), 1);
+}

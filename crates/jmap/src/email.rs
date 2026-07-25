@@ -117,6 +117,8 @@ pub fn open_and_parse(
         body_html: sanitized_html.as_ref().map(|s| s.html.clone()),
         blocked_image_count: sanitized_html.as_ref().map(|s| s.blocked_image_count),
         attachments,
+        snoozed_until: None,
+        nudge_at: None,
     })
 }
 

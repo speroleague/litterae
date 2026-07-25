@@ -19,6 +19,7 @@
 	import { mailNav, refreshMailboxes, bumpRefresh } from '$lib/mailNav.svelte';
 	import { openReply, openDraft } from '$lib/composeState.svelte';
 	import MailBodyFrame from '$lib/MailBodyFrame.svelte';
+	import AddressChip from '$lib/AddressChip.svelte';
 
 	let email = $state<EmailObject | null>(null);
 	let threadEmails = $state<EmailObject[]>([]);
@@ -170,10 +171,6 @@
 		});
 	}
 
-	function addressLabel(addr: { name: string | null; email: string }) {
-		return addr.name ? `${addr.name} <${addr.email}>` : addr.email;
-	}
-
 	let downloadingBlobId = $state<string | null>(null);
 
 	async function handleDownload(blobId: string, name: string) {
@@ -261,12 +258,14 @@
 			</h1>
 			<div class="mb-6 flex flex-col gap-0.5 text-sm">
 				<div style="color: var(--text);">
-					{#each email.from as addr}
-						<span>{addressLabel(addr)}</span>
+					{#each email.from as addr (addr.email)}
+						<AddressChip {addr} />
 					{/each}
 				</div>
 				<div style="color: var(--text-faint);">
-					to {email.to.map(addressLabel).join(', ')} · {fullDate(email.receivedAt)}
+					to
+					{#each email.to as addr, i (addr.email)}<AddressChip {addr} muted />{i < email.to.length - 1 ? ', ' : ''}{/each}
+					· {fullDate(email.receivedAt)}
 				</div>
 			</div>
 			{#if parentEmail}

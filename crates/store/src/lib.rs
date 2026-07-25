@@ -3,6 +3,7 @@
 //! metadata lives in SQLite under WAL mode.
 
 pub mod blob;
+pub mod contacts;
 pub mod mailboxes;
 pub mod messages;
 pub mod metadata;
@@ -10,6 +11,7 @@ pub mod threads;
 pub mod uploads;
 
 pub use blob::BlobStore;
+pub use contacts::StoredContact;
 pub use mailboxes::{
     Mailbox, ROLE_ARCHIVE, ROLE_DRAFTS, ROLE_INBOX, ROLE_JUNK, ROLE_SENT, ROLE_TRASH,
 };

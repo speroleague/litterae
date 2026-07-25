@@ -11,7 +11,8 @@
 		ListIcon,
 		DotsThreeVerticalIcon,
 		NotePencilIcon,
-		GearIcon
+		GearIcon,
+		UsersIcon
 	} from 'phosphor-svelte';
 	import { goto } from '$app/navigation';
 	import { fade } from 'svelte/transition';
@@ -308,6 +309,14 @@
 					style="color: {mailNav.activeViewId === UNREAD_VIEW ? 'var(--accent)' : 'var(--text-muted)'};"
 				>
 					<EnvelopeSimpleIcon size={20} weight={mailNav.activeViewId === UNREAD_VIEW ? 'fill' : 'regular'} />
+				</button>
+				<button
+					onclick={() => goto('/mail/contacts')}
+					aria-label="Contacts"
+					class="flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-[var(--surface-hover)]"
+					style="color: var(--text-muted);"
+				>
+					<UsersIcon size={20} />
 				</button>
 				<button
 					onclick={() => goto('/mail/settings')}

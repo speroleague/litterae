@@ -821,3 +821,149 @@ async fn download_is_a_uniform_404_across_accounts_for_message_and_upload_blobs(
         );
     }
 }
+
+/// Contact/set create+update+destroy round trip over the real HTTP surface,
+/// plus the app-level duplicate-email rejection (there's no SQL UNIQUE for
+/// this since the email lives inside the sealed blob -- see
+/// `crates/jmap/src/api.rs::contact_set`).
+#[tokio::test]
+async fn contact_crud_round_trip_and_rejects_duplicate_email() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::open(tmp.path()).unwrap());
+    let metadata = Arc::new(MetadataStore::open_in_memory().unwrap());
+    let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
+    let cfg = fast_argon2();
+
+    auth_store
+        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .unwrap();
+
+    let state = AppState::new(
+        auth_store,
+        blobs,
+        metadata,
+        Arc::new(audit::AuditStore::open_in_memory().unwrap()),
+        Arc::new(cfg),
+        Arc::new(queue::QueueStore::open_in_memory().unwrap()),
+        Arc::new(common::changes::ChangeNotifier::new()),
+        None,
+        25 * 1024 * 1024,
+    );
+    let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+    ));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/unlock")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "local_part": "alice",
+                "domain": "example.com",
+                "password": "correct horse battery staple",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let token = body["token"].as_str().unwrap().to_string();
+    let account_id = body["accountId"].as_str().unwrap().to_string();
+
+    let call = |method_calls: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri("/jmap/api")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(method_calls.to_string()))
+            .unwrap()
+    };
+
+    // 1. Create a contact.
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [
+            ["Contact/set", { "accountId": account_id, "create": { "c1": { "name": "Bob", "email": "bob@example.net" } } }, "r1"]
+        ]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let created = &body["methodResponses"][0][1]["created"]["c1"];
+    assert_eq!(created["email"], "bob@example.net");
+    let contact_id = created["id"].as_str().unwrap().to_string();
+
+    // 2. A second contact with the same email (any case) is rejected.
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [
+            ["Contact/set", { "accountId": account_id, "create": { "c2": { "name": "Bobby", "email": "BOB@example.net" } } }, "r2"]
+        ]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert!(body["methodResponses"][0][1]["created"].get("c2").is_none());
+    assert_eq!(
+        body["methodResponses"][0][1]["notCreated"]["c2"]["type"],
+        "serverFail"
+    );
+
+    // 3. Contact/get lists the one contact that was actually created.
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [
+            ["Contact/get", { "accountId": account_id }, "r3"]
+        ]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    let list = body["methodResponses"][0][1]["list"].as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], contact_id);
+    assert_eq!(list[0]["name"], "Bob");
+
+    // 4. Update the name.
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [
+            ["Contact/set", { "accountId": account_id, "update": { (contact_id.clone()): { "name": "Bob Smith" } } }, "r4"]
+        ]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert!(body["methodResponses"][0][1]["updated"].get(&contact_id).is_some());
+
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [
+            ["Contact/get", { "accountId": account_id, "ids": [contact_id.clone()] }, "r5"]
+        ]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert_eq!(body["methodResponses"][0][1]["list"][0]["name"], "Bob Smith");
+
+    // 5. Destroy it, then confirm it's gone.
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [
+            ["Contact/set", { "accountId": account_id, "destroy": [contact_id.clone()] }, "r6"]
+        ]
+    }));
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert_eq!(body["methodResponses"][0][1]["destroyed"][0], contact_id);
+
+    let req = call(serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        "methodCalls": [
+            ["Contact/get", { "accountId": account_id }, "r7"]
+        ]
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    let body = json_body(resp).await;
+    assert!(body["methodResponses"][0][1]["list"].as_array().unwrap().is_empty());
+}

@@ -280,6 +280,7 @@ pub async fn sse(
                                         account_id.to_string(): {
                                             "Mailbox": c.state.to_string(),
                                             "Email": c.state.to_string(),
+                                            "Contact": c.state.to_string(),
                                         }
                                     }
                                 });

@@ -5,6 +5,7 @@
 	import { session } from '$lib/session.svelte';
 	import { subscribeToChanges, getIdentity } from '$lib/jmap';
 	import { mailNav, refreshMailboxes, bumpRefresh, closeDrawer } from '$lib/mailNav.svelte';
+	import { loadContacts } from '$lib/contactsState.svelte';
 	import { setSignature } from '$lib/composeState.svelte';
 	import MailSidebar from '$lib/MailSidebar.svelte';
 	import Compose from '$lib/Compose.svelte';
@@ -20,6 +21,7 @@
 	$effect(() => {
 		if (session.isUnlocked) {
 			refreshMailboxes();
+			loadContacts();
 		}
 	});
 
@@ -42,6 +44,7 @@
 		const unsubscribe = subscribeToChanges(token, () => {
 			refreshMailboxes();
 			bumpRefresh();
+			loadContacts();
 		});
 		return unsubscribe;
 	});

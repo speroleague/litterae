@@ -373,6 +373,51 @@ export async function setIdentitySignature(
 	]);
 }
 
+export interface ContactObject {
+	id: string;
+	name: string | null;
+	email: string;
+}
+
+export async function getContacts(token: string, accountId: string): Promise<ContactObject[]> {
+	const [[, result]] = await callApi(token, [['Contact/get', { accountId }, 'c1']]);
+	return result.list as ContactObject[];
+}
+
+export async function createContact(
+	token: string,
+	accountId: string,
+	input: { name?: string; email: string }
+): Promise<ContactObject> {
+	const [[, result]] = await callApi(token, [
+		['Contact/set', { accountId, create: { c1: input } }, 'c1']
+	]);
+	const created = (result.created as Record<string, ContactObject> | undefined)?.c1;
+	if (!created) {
+		throw new JmapSetError((result.notCreated as Record<string, unknown> | undefined)?.c1);
+	}
+	return created;
+}
+
+export async function updateContact(
+	token: string,
+	accountId: string,
+	id: string,
+	patch: { name?: string; email?: string }
+): Promise<void> {
+	const [[, result]] = await callApi(token, [
+		['Contact/set', { accountId, update: { [id]: patch } }, 'c1']
+	]);
+	const updated = (result.updated as Record<string, unknown> | undefined)?.[id];
+	if (updated === undefined) {
+		throw new JmapSetError((result.notUpdated as Record<string, unknown> | undefined)?.[id]);
+	}
+}
+
+export async function deleteContact(token: string, accountId: string, id: string): Promise<void> {
+	await callApi(token, [['Contact/set', { accountId, destroy: [id] }, 'c1']]);
+}
+
 export interface UploadedBlob {
 	accountId: string;
 	blobId: string;

@@ -16,13 +16,15 @@ use store::{
 
 use crate::compose;
 use crate::compose_html;
+use crate::contacts::{self, ContactPlain};
 use crate::email;
 use crate::types::{
-    error_response, EmailCreateRequest, EmailGetArgs, EmailGetResult, EmailObject, EmailQueryArgs,
-    EmailQueryResult, EmailSetArgs, EmailSetResult, EmailSubmissionSetArgs,
-    EmailSubmissionSetResult, IdentityGetArgs, IdentityGetResult, IdentityObject, IdentitySetArgs,
-    IdentitySetResult, MailboxGetArgs, MailboxGetResult, MailboxObject, MethodCall, MethodResponse,
-    ThreadGetArgs, ThreadGetResult, ThreadObject,
+    error_response, ContactGetArgs, ContactGetResult, ContactObject, ContactSetArgs,
+    ContactSetResult, EmailCreateRequest, EmailGetArgs, EmailGetResult,
+    EmailObject, EmailQueryArgs, EmailQueryResult, EmailSetArgs, EmailSetResult,
+    EmailSubmissionSetArgs, EmailSubmissionSetResult, IdentityGetArgs, IdentityGetResult,
+    IdentityObject, IdentitySetArgs, IdentitySetResult, MailboxGetArgs, MailboxGetResult,
+    MailboxObject, MethodCall, MethodResponse, ThreadGetArgs, ThreadGetResult, ThreadObject,
 };
 
 pub struct AccountContext<'a> {
@@ -67,6 +69,8 @@ pub fn dispatch(call: MethodCall, ctx: &AccountContext) -> MethodResponse {
         "Thread/get" => thread_get(args, &call_id, ctx),
         "Identity/get" => identity_get(args, &call_id, ctx),
         "Identity/set" => identity_set(args, &call_id, ctx),
+        "Contact/get" => contact_get(args, &call_id, ctx),
+        "Contact/set" => contact_set(args, &call_id, ctx),
         other => error_response(
             "unknownMethod",
             &format!("no such method: {other}"),
@@ -90,6 +94,10 @@ fn email_row_id(id: &str) -> Option<i64> {
 
 fn thread_row_id(id: &str) -> Option<i64> {
     id.strip_prefix('t').and_then(|n| n.parse::<i64>().ok())
+}
+
+fn contact_row_id(id: &str) -> Option<i64> {
+    id.strip_prefix('c').and_then(|n| n.parse::<i64>().ok())
 }
 
 fn mailbox_get(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> MethodResponse {
@@ -960,6 +968,245 @@ fn identity_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) ->
     MethodResponse(
         "Identity/set".to_string(),
         serde_json::to_value(result).expect("IdentitySetResult always serializes"),
+        call_id.to_string(),
+    )
+}
+
+/// Opens and maps a stored row to the client-facing shape; `None` on a
+/// decrypt failure (wrong/rotated AMK, corrupt row) -- callers treat that
+/// the same as "not found" rather than surfacing a crypto error to the
+/// client.
+fn contact_object(id: i64, sealed: &[u8], ctx: &AccountContext) -> Option<ContactObject> {
+    let plain = contacts::open_contact(ctx.amk, sealed).ok()?;
+    Some(ContactObject {
+        id: format!("c{id}"),
+        name: plain.name,
+        email: plain.email,
+    })
+}
+
+fn contact_get(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> MethodResponse {
+    let args: ContactGetArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return error_response("invalidArguments", &e.to_string(), call_id),
+    };
+    if args.account_id != ctx.account_id_str {
+        return error_response("accountNotFound", "unknown accountId", call_id);
+    }
+    let account_id = parse_account_id(ctx);
+
+    let (list, not_found) = match args.ids {
+        None => {
+            let list = ctx
+                .metadata
+                .contacts_for_account(account_id)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|c| contact_object(c.id, &c.sealed, ctx))
+                .collect();
+            (list, Vec::new())
+        }
+        Some(ids) => {
+            let mut list = Vec::new();
+            let mut not_found = Vec::new();
+            for id in ids {
+                let found = contact_row_id(&id)
+                    .and_then(|row_id| ctx.metadata.get_contact(row_id).ok().flatten())
+                    .filter(|c| c.account_id == account_id)
+                    .and_then(|c| contact_object(c.id, &c.sealed, ctx));
+                match found {
+                    Some(obj) => list.push(obj),
+                    None => not_found.push(id),
+                }
+            }
+            (list, not_found)
+        }
+    };
+
+    let result = ContactGetResult {
+        account_id: ctx.account_id_str.clone(),
+        state: "1".to_string(),
+        list,
+        not_found,
+    };
+    MethodResponse(
+        "Contact/get".to_string(),
+        serde_json::to_value(result).expect("ContactGetResult always serializes"),
+        call_id.to_string(),
+    )
+}
+
+/// Validates a create/update's `name`/`email`, following the same checks
+/// `create_draft` applies to compose addresses.
+fn validate_contact_fields(name: Option<&str>, email: &str) -> Result<(), String> {
+    if !common::input::valid_email_address(email) {
+        return Err(format!("invalid email address: {email}"));
+    }
+    if name.is_some_and(|value| !common::input::valid_header_value(value)) {
+        return Err("display name contains prohibited control characters".to_string());
+    }
+    Ok(())
+}
+
+fn contact_set(args: serde_json::Value, call_id: &str, ctx: &AccountContext) -> MethodResponse {
+    let args: ContactSetArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return error_response("invalidArguments", &e.to_string(), call_id),
+    };
+    if args.account_id != ctx.account_id_str {
+        return error_response("accountNotFound", "unknown accountId", call_id);
+    }
+    let account_id = parse_account_id(ctx);
+
+    let mut result = ContactSetResult {
+        account_id: ctx.account_id_str.clone(),
+        new_state: "1".to_string(),
+        ..Default::default()
+    };
+
+    // Decrypted once up front and kept in sync as creates/updates land, so
+    // duplicate-email rejection also catches duplicates within the same
+    // request batch, not just against what was already stored.
+    let mut existing: Vec<(i64, ContactPlain)> = ctx
+        .metadata
+        .contacts_for_account(account_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|c| contacts::open_contact(ctx.amk, &c.sealed).ok().map(|p| (c.id, p)))
+        .collect();
+
+    let is_duplicate = |email: &str, existing: &[(i64, ContactPlain)], excluding: Option<i64>| {
+        existing
+            .iter()
+            .any(|(row_id, c)| Some(*row_id) != excluding && c.email.eq_ignore_ascii_case(email))
+    };
+
+    for (key, req) in &args.create {
+        let outcome = (|| -> Result<(i64, ContactPlain), String> {
+            validate_contact_fields(req.name.as_deref(), &req.email)?;
+            if is_duplicate(&req.email, &existing, None) {
+                return Err("a contact with this email already exists".to_string());
+            }
+            let plain = ContactPlain {
+                name: req.name.clone(),
+                email: req.email.clone(),
+            };
+            let sealed = contacts::seal_contact(ctx.amk, &plain);
+            let row_id = ctx
+                .metadata
+                .insert_contact(account_id, &sealed, now_unix())
+                .map_err(|e| e.to_string())?;
+            Ok((row_id, plain))
+        })();
+
+        match outcome {
+            Ok((row_id, plain)) => {
+                result.created.insert(
+                    key.clone(),
+                    serde_json::json!({ "id": format!("c{row_id}"), "name": plain.name, "email": plain.email }),
+                );
+                existing.push((row_id, plain));
+            }
+            Err(e) => {
+                result.not_created.insert(
+                    key.clone(),
+                    serde_json::json!({"type": "serverFail", "description": e}),
+                );
+            }
+        }
+    }
+
+    for (id, patch) in &args.update {
+        let outcome = (|| -> Result<(), String> {
+            let row_id = contact_row_id(id).ok_or_else(|| "notFound".to_string())?;
+            let stored = ctx
+                .metadata
+                .get_contact(row_id)
+                .map_err(|e| e.to_string())?
+                .filter(|c| c.account_id == account_id)
+                .ok_or_else(|| "notFound".to_string())?;
+            let current = contacts::open_contact(ctx.amk, &stored.sealed).map_err(|e| e.to_string())?;
+
+            let mut name = current.name;
+            let mut email = current.email;
+            if let Some(value) = patch.get("name") {
+                name = value.as_str().map(|s| s.to_string());
+            }
+            if let Some(value) = patch.get("email") {
+                if let Some(s) = value.as_str() {
+                    email = s.to_string();
+                }
+            }
+            validate_contact_fields(name.as_deref(), &email)?;
+            if is_duplicate(&email, &existing, Some(row_id)) {
+                return Err("a contact with this email already exists".to_string());
+            }
+
+            let plain = ContactPlain { name, email };
+            let sealed = contacts::seal_contact(ctx.amk, &plain);
+            ctx.metadata
+                .update_contact(row_id, &sealed, now_unix())
+                .map_err(|e| e.to_string())?;
+            existing.retain(|(id, _)| *id != row_id);
+            existing.push((row_id, plain));
+            Ok(())
+        })();
+
+        match outcome {
+            Ok(()) => {
+                result.updated.insert(id.clone(), serde_json::json!(null));
+            }
+            Err(e) if e == "notFound" => {
+                result
+                    .not_updated
+                    .insert(id.clone(), serde_json::json!({"type": "notFound"}));
+            }
+            Err(e) => {
+                result.not_updated.insert(
+                    id.clone(),
+                    serde_json::json!({"type": "serverFail", "description": e}),
+                );
+            }
+        }
+    }
+
+    for id in &args.destroy {
+        let outcome = (|| -> Result<(), String> {
+            let row_id = contact_row_id(id).ok_or_else(|| "notFound".to_string())?;
+            let stored = ctx
+                .metadata
+                .get_contact(row_id)
+                .map_err(|e| e.to_string())?
+                .filter(|c| c.account_id == account_id)
+                .ok_or_else(|| "notFound".to_string())?;
+            ctx.metadata
+                .delete_contact(stored.id)
+                .map_err(|e| e.to_string())
+        })();
+
+        match outcome {
+            Ok(()) => result.destroyed.push(id.clone()),
+            Err(e) if e == "notFound" => {
+                result
+                    .not_destroyed
+                    .insert(id.clone(), serde_json::json!({"type": "notFound"}));
+            }
+            Err(e) => {
+                result.not_destroyed.insert(
+                    id.clone(),
+                    serde_json::json!({"type": "serverFail", "description": e}),
+                );
+            }
+        }
+    }
+
+    if !result.created.is_empty() || !result.updated.is_empty() || !result.destroyed.is_empty() {
+        ctx.notifier.notify(account_id);
+    }
+
+    MethodResponse(
+        "Contact/set".to_string(),
+        serde_json::to_value(result).expect("ContactSetResult always serializes"),
         call_id.to_string(),
     )
 }

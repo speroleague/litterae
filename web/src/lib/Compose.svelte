@@ -6,6 +6,7 @@
 	import { composeState, closeCompose, parseAddressList, addAttachment, removeAttachment } from '$lib/composeState.svelte';
 	import { bumpRefresh, refreshMailboxes } from '$lib/mailNav.svelte';
 	import RichTextEditor from './RichTextEditor.svelte';
+	import AddressTypeahead from './AddressTypeahead.svelte';
 
 	let ccOpen = $state(false);
 	let bccOpen = $state(false);
@@ -144,13 +145,7 @@
 				</div>
 				<div class="flex items-center gap-2 px-4 py-2.5" style="border-bottom: 1px solid var(--border);">
 					<span class="w-8 shrink-0 text-sm" style="color: var(--text-faint);">To</span>
-					<input
-						type="text"
-						placeholder="alice@example.com"
-						bind:value={composeState.to}
-						class="min-w-0 flex-1 bg-transparent text-[15px] outline-none"
-						style="color: var(--text);"
-					/>
+					<AddressTypeahead bind:value={composeState.to} placeholder="alice@example.com" />
 					{#if !ccOpen}
 						<button
 							onclick={() => (ccOpen = true)}
@@ -173,25 +168,13 @@
 				{#if ccOpen}
 					<div class="flex items-center gap-2 px-4 py-2.5" style="border-bottom: 1px solid var(--border);">
 						<span class="w-8 shrink-0 text-sm" style="color: var(--text-faint);">Cc</span>
-						<input
-							type="text"
-							placeholder="cc@example.com"
-							bind:value={composeState.cc}
-							class="min-w-0 flex-1 bg-transparent text-[15px] outline-none"
-							style="color: var(--text);"
-						/>
+						<AddressTypeahead bind:value={composeState.cc} placeholder="cc@example.com" />
 					</div>
 				{/if}
 				{#if bccOpen}
 					<div class="flex items-center gap-2 px-4 py-2.5" style="border-bottom: 1px solid var(--border);">
 						<span class="w-8 shrink-0 text-sm" style="color: var(--text-faint);">Bcc</span>
-						<input
-							type="text"
-							placeholder="bcc@example.com"
-							bind:value={composeState.bcc}
-							class="min-w-0 flex-1 bg-transparent text-[15px] outline-none"
-							style="color: var(--text);"
-						/>
+						<AddressTypeahead bind:value={composeState.bcc} placeholder="bcc@example.com" />
 					</div>
 				{/if}
 				<div class="px-4 py-2.5" style="border-bottom: 1px solid var(--border);">

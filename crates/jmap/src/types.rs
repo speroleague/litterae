@@ -409,6 +409,70 @@ pub struct IdentitySetResult {
     pub not_updated: HashMap<String, serde_json::Value>,
 }
 
+/// One address-book entry: a display name and a single email address.
+/// Litterae keeps this deliberately small (no multiple emails/phones per
+/// contact) -- it maps directly onto "save this address from a message"
+/// and onto the To/Cc/Bcc typeahead, which is all this needs to support.
+#[derive(Serialize, Clone)]
+pub struct ContactObject {
+    pub id: String,
+    pub name: Option<String>,
+    pub email: String,
+}
+
+#[derive(Deserialize)]
+pub struct ContactGetArgs {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(default)]
+    pub ids: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct ContactGetResult {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    pub state: String,
+    pub list: Vec<ContactObject>,
+    #[serde(rename = "notFound")]
+    pub not_found: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ContactSetArgs {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(default)]
+    pub create: HashMap<String, ContactCreateRequest>,
+    #[serde(default)]
+    pub update: HashMap<String, HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    pub destroy: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ContactCreateRequest {
+    pub name: Option<String>,
+    pub email: String,
+}
+
+#[derive(Serialize, Default)]
+pub struct ContactSetResult {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "newState")]
+    pub new_state: String,
+    pub created: HashMap<String, serde_json::Value>,
+    pub updated: HashMap<String, serde_json::Value>,
+    pub destroyed: Vec<String>,
+    #[serde(rename = "notCreated")]
+    pub not_created: HashMap<String, serde_json::Value>,
+    #[serde(rename = "notUpdated")]
+    pub not_updated: HashMap<String, serde_json::Value>,
+    #[serde(rename = "notDestroyed")]
+    pub not_destroyed: HashMap<String, serde_json::Value>,
+}
+
 pub fn error_response(err_type: &str, description: &str, call_id: &str) -> MethodResponse {
     MethodResponse(
         "error".to_string(),

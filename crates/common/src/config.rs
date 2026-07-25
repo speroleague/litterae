@@ -21,6 +21,10 @@ pub struct Config {
     pub antispam: AntispamConfig,
     #[serde(default)]
     pub antivirus: AntivirusConfig,
+    #[serde(default)]
+    pub mta_sts: MtaStsConfig,
+    #[serde(default)]
+    pub tls_rpt: TlsRptConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -209,6 +213,57 @@ pub struct AntivirusConfig {
 impl AntivirusConfig {
     pub fn is_enabled(&self) -> bool {
         self.endpoint.is_some()
+    }
+}
+
+/// §8.5 deliverability: MTA-STS (RFC 8461) policy content. litterae only
+/// generates this (`dns::MtaStsPolicy`) -- the operator publishes it, same
+/// "litterae prints the record, the operator publishes it" pattern as DKIM.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MtaStsConfig {
+    /// "testing" (report-only, no delivery impact) or "enforce" -- start
+    /// with testing until `mta-sts-init`'s printed policy has been
+    /// published and validators are green.
+    #[serde(default = "default_mta_sts_mode")]
+    pub mode: String,
+    /// The MX hostname this policy should cover, e.g. "mail.yourdomain.com".
+    /// Defaults to `server.domain` (the same hostname `queue::Worker`
+    /// already uses for HELO) when unset -- override this if your MX
+    /// record points somewhere else.
+    pub mx: Option<String>,
+}
+
+fn default_mta_sts_mode() -> String {
+    "testing".to_string()
+}
+
+impl Default for MtaStsConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_mta_sts_mode(),
+            mx: None,
+        }
+    }
+}
+
+/// §8.5 deliverability: TLS-RPT (RFC 8460) DNS record. Aggregate reports
+/// arrive as ordinary inbound mail to `{rua_local_part}@{domain}` -- no
+/// separate ingestion feature needed, so there's nothing else to configure.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsRptConfig {
+    #[serde(default = "default_tls_rpt_local_part")]
+    pub rua_local_part: String,
+}
+
+fn default_tls_rpt_local_part() -> String {
+    "tlsrpt".to_string()
+}
+
+impl Default for TlsRptConfig {
+    fn default() -> Self {
+        Self {
+            rua_local_part: default_tls_rpt_local_part(),
+        }
     }
 }
 

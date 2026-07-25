@@ -45,3 +45,9 @@ endpoint = "rspamd:11333"
 
 [antivirus]
 endpoint = "clamav:3310"
+
+# [mta_sts] / [tls_rpt] aren't set here -- their defaults (mode = "testing",
+# rua_local_part = "tlsrpt") apply automatically with no env var needed.
+# Bind-mount a full custom config over this file if you need to override
+# either (e.g. flip mta_sts.mode to "enforce", or point mx at a hostname
+# other than LITTERAE_DOMAIN).

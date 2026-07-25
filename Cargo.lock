@@ -685,7 +685,9 @@ name = "dns"
 version = "0.1.0"
 dependencies = [
  "common",
+ "hex",
  "hickory-resolver",
+ "sha2",
  "tokio",
  "tracing",
 ]

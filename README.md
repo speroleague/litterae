@@ -70,6 +70,8 @@ records only you (as the domain's DNS owner) can publish. Set these
 | SPF | TXT on `yourdomain.com` | `v=spf1 mx ~all` | declares this server may send as your domain |
 | DKIM | TXT on `{selector}._domainkey.yourdomain.com` | printed by `dkim-init` (below) | signs outgoing mail; without it, most providers (Gmail, etc.) will junk or reject you |
 | DMARC | TXT on `_dmarc.yourdomain.com` | `v=DMARC1; p=quarantine; rua=mailto:postmaster@yourdomain.com` | policy for SPF/DKIM failures + reporting; increasingly required by large providers |
+| MTA-STS | TXT on `_mta-sts.yourdomain.com`, plus a static file at `https://mta-sts.yourdomain.com/.well-known/mta-sts.txt` | printed by `mta-sts-init` (below) | tells senders to require TLS when delivering to you, even ones that don't support DANE (Gmail, Yahoo) |
+| TLS-RPT | TXT on `_smtp._tls.yourdomain.com` | printed by `tls-rpt-init` (below) | senders email you aggregate reports about TLS failures delivering to you -- reports just arrive as normal inbound mail, no extra setup |
 
 ### 2. Configure
 
@@ -120,8 +122,25 @@ pointed at the server and port 80 reachable from the internet.
    after the first time). Add it to your DNS, then move on -- you don't
    need to wait for it to propagate before creating accounts, only
    before mail delivery relying on it will pass.
-4. Create a mailbox account in the **Accounts** tab.
-5. Log into `https://mail.yourdomain.com` with that account and send a
+4. Same for MTA-STS and TLS-RPT (also no admin UI yet):
+   ```sh
+   docker compose exec litterae litterae mta-sts-init yourdomain.com
+   docker compose exec litterae litterae tls-rpt-init yourdomain.com
+   ```
+   `mta-sts-init` prints both a policy file (save it as a static file
+   Caddy serves at `https://mta-sts.yourdomain.com/.well-known/mta-sts.txt`
+   -- litterae doesn't serve this dynamically, same as the DKIM record
+   above) and the DNS TXT record pointing at it. Start with `mode:
+   testing` (the default, set via `[mta_sts]` in your config) -- it has
+   no effect on delivery, it just asks senders that support MTA-STS to
+   report what they *would* have enforced. Once `mail-tester.com` and
+   real deliveries look right, flip `mode` to `enforce` and re-run the
+   command (the printed `id` bumps automatically). `tls-rpt-init` only
+   prints a DNS record; the reports it enables just arrive as normal
+   inbound mail, so make sure the address it prints resolves to a real
+   account.
+5. Create a mailbox account in the **Accounts** tab.
+6. Log into `https://mail.yourdomain.com` with that account and send a
    test message.
 6. If it doesn't show as delivered, check the **Queue** tab -- recent
    failures show the exact reason (DNS failure, connection refused,

@@ -31,6 +31,8 @@ async fn main() {
         Some("provision") => return provision(&config, &args[1..]),
         Some("dkim-init") => return dkim_init(&config, &args[1..]),
         Some("domain") => return domain_cli(&config, &args[1..]),
+        Some("mta-sts-init") => return mta_sts_init(&config, &args[1..]),
+        Some("tls-rpt-init") => return tls_rpt_init(&config, &args[1..]),
         _ => {}
     }
 
@@ -293,6 +295,57 @@ fn dkim_init(config: &Config, args: &[String]) {
             std::process::exit(1);
         }
     }
+}
+
+/// `litterae mta-sts-init <domain>` -- prints the MTA-STS (RFC 8461)
+/// policy file to publish and the DNS TXT record pointing at it. Safe to
+/// re-run any time `[mta_sts]` config changes; the printed `id` changes
+/// automatically (it's a content hash, not a stored counter) so re-running
+/// after an edit is exactly how you'd bump it.
+fn mta_sts_init(config: &Config, args: &[String]) {
+    let [domain] = args else {
+        eprintln!("usage: litterae mta-sts-init <domain>");
+        std::process::exit(2);
+    };
+
+    let mx = config
+        .mta_sts
+        .mx
+        .clone()
+        .unwrap_or_else(|| config.server.domain.clone());
+    let policy = dns::MtaStsPolicy {
+        mode: config.mta_sts.mode.clone(),
+        mx,
+        max_age: 604800,
+    };
+
+    println!("Save this as a static file served at https://mta-sts.{domain}/.well-known/mta-sts.txt:");
+    println!("---");
+    print!("{}", policy.policy_file_body());
+    println!("---");
+    println!();
+    println!("Publish this TXT record:");
+    println!("  {}", policy.dns_txt_record(domain));
+}
+
+/// `litterae tls-rpt-init <domain>` -- prints the TLS-RPT (RFC 8460) DNS
+/// TXT record. No app-side setup beyond that: reports arrive as ordinary
+/// inbound mail, so the address it points at just needs to be a real
+/// mailbox or catch-all on this domain.
+fn tls_rpt_init(config: &Config, args: &[String]) {
+    let [domain] = args else {
+        eprintln!("usage: litterae tls-rpt-init <domain>");
+        std::process::exit(2);
+    };
+
+    let local_part = &config.tls_rpt.rua_local_part;
+    println!("Publish this TXT record:");
+    println!("  {}", dns::tls_rpt::dns_txt_record(domain, local_part));
+    println!();
+    println!(
+        "Reports will arrive as ordinary inbound mail to {local_part}@{domain} -- make sure \
+         that address resolves to a real account or catch-all."
+    );
 }
 
 /// `litterae domain add|list|set-catchall` -- the CLI's counterpart to the

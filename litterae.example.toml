@@ -59,3 +59,20 @@ listen_addr = "127.0.0.1:8621"
 # TCP: "127.0.0.1:3310"
 # In Docker Compose, this is the clamav service name: "clamav:3310"
 # endpoint = "127.0.0.1:3310"
+
+[mta_sts]
+# "testing" has no effect on delivery -- it just asks senders that
+# support MTA-STS to report what they'd have enforced. Flip to "enforce"
+# once `litterae mta-sts-init` output validates clean (mail-tester.com,
+# real deliveries).
+mode = "testing"
+# Defaults to [server] domain (same hostname the outbound worker already
+# uses for HELO) if unset. Override if your MX record points elsewhere,
+# e.g. "mail.example.com".
+# mx = "mail.example.com"
+
+[tls_rpt]
+# TLS-RPT aggregate reports arrive as ordinary inbound mail to
+# {rua_local_part}@{server.domain} -- make sure that resolves to a real
+# account or catch-all.
+rua_local_part = "tlsrpt"

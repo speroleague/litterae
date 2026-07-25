@@ -4,11 +4,20 @@
 //! custom rustls certificate verifier (RFC 6698 matching-type/DNSSEC-chain
 //! validation) that hasn't been built yet. Callers should treat
 //! `resolve_tlsa` as informational until that lands.
+//!
+//! Also owns generating (not fetching) the two other §8.5 deliverability
+//! records for litterae's own domain(s): MTA-STS policy/DNS record
+//! (`mta_sts`) and the TLS-RPT DNS record (`tls_rpt`).
 
 use hickory_resolver::proto::rr::{RData, RecordType};
 use hickory_resolver::TokioResolver;
 
 use common::{Error, Result};
+
+pub mod mta_sts;
+pub mod tls_rpt;
+
+pub use mta_sts::MtaStsPolicy;
 
 pub struct Resolver {
     inner: TokioResolver,

@@ -159,6 +159,7 @@ async fn main() {
         argon2_config.clone(),
         log_dir,
         admin_dns_resolver,
+        config.server.domain.clone(),
     );
     let admin_router = admin::build_router(admin_state);
     let admin_addr = config.admin.listen_addr.clone();

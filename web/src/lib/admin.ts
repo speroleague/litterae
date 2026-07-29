@@ -46,12 +46,59 @@ export async function getStatus(): Promise<StatusResponse> {
 	return request('/admin/status');
 }
 
-export async function login(username: string, password: string): Promise<{ token: string; mustChangePassword: boolean }> {
+export async function login(
+	username: string,
+	password: string
+): Promise<{ token: string; mustChangePassword: boolean; mfaRequired: boolean }> {
 	return request('/admin/login', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ username, password })
 	});
+}
+
+// A wrong code here behaves the same as `changePassword`'s wrong-current-
+// password case: the API can't distinguish "bad code" from "your token died"
+// (both come back 401), so we let it clear the session either way rather
+// than pretend to know which one happened.
+export async function mfaVerify(token: string, code: string): Promise<{ mustChangePassword: boolean }> {
+	return request(
+		'/admin/mfa/verify',
+		{
+			method: 'POST',
+			headers: { 'content-type': 'application/json', ...authHeaders(token) },
+			body: JSON.stringify({ code })
+		},
+		true
+	);
+}
+
+export async function mfaEnroll(token: string): Promise<{ secret: string; otpauthUrl: string }> {
+	return request('/admin/mfa/enroll', { method: 'POST', headers: authHeaders(token) }, true);
+}
+
+export async function mfaConfirm(token: string, code: string): Promise<{ recoveryCodes: string[] }> {
+	return request(
+		'/admin/mfa/confirm',
+		{
+			method: 'POST',
+			headers: { 'content-type': 'application/json', ...authHeaders(token) },
+			body: JSON.stringify({ code })
+		},
+		true
+	);
+}
+
+export async function mfaDisable(token: string, password: string): Promise<void> {
+	await request(
+		'/admin/mfa/disable',
+		{
+			method: 'POST',
+			headers: { 'content-type': 'application/json', ...authHeaders(token) },
+			body: JSON.stringify({ password })
+		},
+		true
+	);
 }
 
 export async function logout(token: string): Promise<void> {

@@ -29,6 +29,13 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i64, StatusCod
         .sessions
         .admin_id(token)
         .ok_or(StatusCode::UNAUTHORIZED)?;
+    // Order doesn't matter in practice -- a fresh admin never has MFA
+    // enabled, so the two gates never both apply to the same session -- but
+    // MFA first keeps "nothing works until you've proven the second factor"
+    // as the more restrictive read.
+    if state.sessions.mfa_pending(token) != Some(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
     if state.sessions.password_change_required(token) != Some(false) {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -78,6 +85,8 @@ pub struct LoginResponse {
     token: String,
     #[serde(rename = "mustChangePassword")]
     must_change_password: bool,
+    #[serde(rename = "mfaRequired")]
+    mfa_required: bool,
 }
 
 pub async fn login(
@@ -114,13 +123,17 @@ pub async fn login(
     };
     state.login_throttle.record_success(&req.username);
 
-    let token = state
-        .sessions
-        .create(admin.id, wrap_key, admin.must_change_password);
+    let token = state.sessions.create(
+        admin.id,
+        wrap_key,
+        admin.must_change_password,
+        admin.totp_enabled,
+    );
     let _ = state.audit_store.log("auth.login", &admin.username);
     Ok(Json(LoginResponse {
         token,
         must_change_password: admin.must_change_password,
+        mfa_required: admin.totp_enabled,
     }))
 }
 
@@ -157,6 +170,13 @@ pub async fn change_password(
         .sessions
         .admin_id(token)
         .ok_or(StatusCode::UNAUTHORIZED)?;
+    // Deliberately not `require_admin` (that would also reject the
+    // must-change-password session this endpoint exists to unblock), but a
+    // pending second factor still guards everything -- the token alone
+    // proved the password, not yet full admin standing.
+    if state.sessions.mfa_pending(token) != Some(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     // Re-verify the current password rather than trusting the session
     // alone -- a stolen bearer token shouldn't be enough to permanently
@@ -195,6 +215,10 @@ pub async fn change_password(
         .audit_store
         .rewrap_audit_key(&old_wrap_key, &new_wrap_key)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    state
+        .admin_store
+        .rewrap_totp_secret(admin_id, &old_wrap_key, &new_wrap_key)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !state
         .sessions
         .complete_password_change(token, admin_id, new_wrap_key)
@@ -202,6 +226,244 @@ pub async fn change_password(
         return Err(StatusCode::UNAUTHORIZED);
     }
     let _ = state.audit_store.log("admin.password_change", &username);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct MfaCodeRequest {
+    code: String,
+}
+
+#[derive(Serialize)]
+pub struct MfaVerifyResponse {
+    #[serde(rename = "mustChangePassword")]
+    must_change_password: bool,
+}
+
+/// Completes login for a session left in the `mfa_pending` state: accepts
+/// either a live TOTP code or an unused recovery code. Throttled
+/// separately from `/admin/login` (keyed by admin id, not username) so
+/// brute-forcing the 6-digit code can't ride along on the login endpoint's
+/// own throttle budget.
+pub async fn mfa_verify(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<MfaCodeRequest>,
+) -> Result<Json<MfaVerifyResponse>, StatusCode> {
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let admin_id = state
+        .sessions
+        .admin_id(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if state.sessions.mfa_pending(token) != Some(true) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let wrap_key = state
+        .sessions
+        .wrap_key(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let username = state
+        .admin_store
+        .username_for_id(admin_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let throttle_key = format!("mfa:{admin_id}");
+    if state.login_throttle.check(&throttle_key).is_err() {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    let secret = state
+        .admin_store
+        .totp_secret(admin_id, &wrap_key)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut verified = secret.is_some_and(|secret| {
+        crate::mfa::check_code(secret, &state.server_domain, &username, &req.code)
+    });
+
+    let mut used_recovery_code = false;
+    if !verified {
+        let codes = state
+            .admin_store
+            .recovery_codes(admin_id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some(idx) = crate::mfa::match_recovery_code(&req.code, &codes) {
+            let mut remaining = codes;
+            remaining.remove(idx);
+            state
+                .admin_store
+                .set_recovery_codes(admin_id, &remaining)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            verified = true;
+            used_recovery_code = true;
+        }
+    }
+
+    if !verified {
+        state.login_throttle.record_failure(&throttle_key);
+        let _ = state.audit_store.log("auth.mfa_failed", &username);
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    state.login_throttle.record_success(&throttle_key);
+
+    let must_change_password = state
+        .sessions
+        .password_change_required(token)
+        .unwrap_or(false);
+    if !state.sessions.complete_mfa(token, admin_id) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    if used_recovery_code {
+        let _ = state.audit_store.log("auth.mfa_recovery_used", &username);
+    } else {
+        let _ = state.audit_store.log("auth.mfa_verified", &username);
+    }
+    Ok(Json(MfaVerifyResponse {
+        must_change_password,
+    }))
+}
+
+#[derive(Serialize)]
+pub struct MfaEnrollResponse {
+    secret: String,
+    #[serde(rename = "otpauthUrl")]
+    otpauth_url: String,
+}
+
+/// Starts (or restarts) enrollment. Requires disabling any existing MFA
+/// first (`/admin/mfa/disable`) rather than allowing a second pending
+/// secret to replace an active one silently -- otherwise an active
+/// enrollment could be quietly downgraded by anyone holding a valid
+/// session, without the disable endpoint's password re-check.
+pub async fn mfa_enroll(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<MfaEnrollResponse>, StatusCode> {
+    let admin_id = require_admin(&state, &headers)?;
+    if state
+        .admin_store
+        .is_totp_enabled(admin_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        return Err(StatusCode::CONFLICT);
+    }
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let wrap_key = state
+        .sessions
+        .wrap_key(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let username = state
+        .admin_store
+        .username_for_id(admin_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let secret = crate::mfa::generate_secret();
+    state
+        .admin_store
+        .set_pending_totp(admin_id, &wrap_key, &secret)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let response = MfaEnrollResponse {
+        secret: crate::mfa::secret_base32(secret.clone(), &state.server_domain, &username),
+        otpauth_url: crate::mfa::provisioning_uri(secret, &state.server_domain, &username),
+    };
+    let _ = state.audit_store.log("admin.mfa_enroll_started", &username);
+    Ok(Json(response))
+}
+
+#[derive(Serialize)]
+pub struct MfaConfirmResponse {
+    #[serde(rename = "recoveryCodes")]
+    recovery_codes: Vec<String>,
+}
+
+/// Confirms enrollment with a live code from the authenticator app, then
+/// issues one-time recovery codes -- shown here once, never retrievable
+/// again (only their hashes are persisted).
+pub async fn mfa_confirm(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<MfaCodeRequest>,
+) -> Result<Json<MfaConfirmResponse>, StatusCode> {
+    let admin_id = require_admin(&state, &headers)?;
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let wrap_key = state
+        .sessions
+        .wrap_key(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let username = state
+        .admin_store
+        .username_for_id(admin_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let secret = state
+        .admin_store
+        .totp_secret(admin_id, &wrap_key)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::CONFLICT)?;
+    if !crate::mfa::check_code(secret, &state.server_domain, &username, &req.code) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let (plaintext_codes, hashed_codes) = crate::mfa::generate_recovery_codes();
+    state
+        .admin_store
+        .confirm_totp(admin_id, &hashed_codes)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = state.audit_store.log("admin.mfa_enabled", &username);
+    Ok(Json(MfaConfirmResponse {
+        recovery_codes: plaintext_codes,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct MfaDisableRequest {
+    password: String,
+}
+
+/// Re-verifies the current password before turning MFA off, same reasoning
+/// as `change_password`: a stolen bearer token alone shouldn't be enough to
+/// strip the second factor off the account.
+pub async fn mfa_disable(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<MfaDisableRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let admin_id = require_admin(&state, &headers)?;
+    let username = state
+        .admin_store
+        .username_for_id(admin_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let permit = state
+        .auth_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let store = state.admin_store.clone();
+    let config = state.argon2_config.clone();
+    let username_for_verify = username.clone();
+    let password = req.password;
+    let verified = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        store.verify_login(&username_for_verify, password.as_bytes(), &config)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .is_some();
+    if !verified {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    state
+        .admin_store
+        .disable_totp(admin_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = state.audit_store.log("admin.mfa_disabled", &username);
     Ok(StatusCode::NO_CONTENT)
 }
 

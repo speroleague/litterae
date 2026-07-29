@@ -46,6 +46,11 @@ pub struct AppState {
     /// the outbound queue worker's, same pattern as `main.rs` already uses
     /// for giving the worker its own independent store handles.
     pub dns_resolver: Arc<Resolver>,
+    /// The server's own domain, used only as the TOTP provisioning URI's
+    /// `issuer` (what shows up in the admin's authenticator app) -- not a
+    /// security boundary, just so multiple litterae instances read as
+    /// distinct entries.
+    pub server_domain: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -58,6 +63,7 @@ impl AppState {
         argon2_config: Arc<Argon2Config>,
         log_dir: Option<PathBuf>,
         dns_resolver: Arc<Resolver>,
+        server_domain: String,
     ) -> Self {
         Self {
             admin_store,
@@ -70,6 +76,7 @@ impl AppState {
             auth_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_KDFS)),
             log_dir,
             dns_resolver,
+            server_domain,
         }
     }
 }
@@ -80,6 +87,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/login", post(handlers::login))
         .route("/admin/logout", post(handlers::logout))
         .route("/admin/change-password", post(handlers::change_password))
+        .route("/admin/mfa/verify", post(handlers::mfa_verify))
+        .route("/admin/mfa/enroll", post(handlers::mfa_enroll))
+        .route("/admin/mfa/confirm", post(handlers::mfa_confirm))
+        .route("/admin/mfa/disable", post(handlers::mfa_disable))
         .route(
             "/admin/domains",
             get(handlers::list_domains).post(handlers::create_domain),

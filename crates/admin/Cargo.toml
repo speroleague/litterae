@@ -23,6 +23,8 @@ rand.workspace = true
 hex.workspace = true
 time.workspace = true
 subtle = "2.6.1"
+sha2.workspace = true
+totp-rs.workspace = true
 
 [dev-dependencies]
 tower.workspace = true

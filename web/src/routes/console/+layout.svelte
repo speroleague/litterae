@@ -12,6 +12,7 @@
 	const path = $derived(page.url.pathname);
 	const isLoginPage = $derived(path === '/console');
 	const isChangePasswordPage = $derived(path === '/console/change-password');
+	const isMfaVerifyPage = $derived(path === '/console/mfa-verify');
 
 	let drawerOpen = $state(false);
 
@@ -21,11 +22,15 @@
 			if (!isLoginPage) goto('/console');
 			return;
 		}
+		if (adminSession.mfaPending) {
+			if (!isMfaVerifyPage) goto('/console/mfa-verify');
+			return;
+		}
 		if (adminSession.mustChangePassword) {
 			if (!isChangePasswordPage) goto('/console/change-password');
 			return;
 		}
-		if (isLoginPage || isChangePasswordPage) {
+		if (isLoginPage || isChangePasswordPage || isMfaVerifyPage) {
 			goto('/console/domains');
 		}
 	});
@@ -36,7 +41,7 @@
 	}
 </script>
 
-{#if isLoginPage || isChangePasswordPage}
+{#if isLoginPage || isChangePasswordPage || isMfaVerifyPage}
 	{@render children()}
 {:else if adminSession.isAuthenticated && !adminSession.mustChangePassword}
 	<div class="mx-auto flex min-h-screen max-w-5xl">

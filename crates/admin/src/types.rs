@@ -6,6 +6,7 @@ pub struct Admin {
     pub username: String,
     pub must_change_password: bool,
     pub created_at: i64,
+    pub totp_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

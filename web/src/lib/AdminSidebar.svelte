@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { GlobeIcon, UsersIcon, StackIcon, FileTextIcon } from 'phosphor-svelte';
+	import { GlobeIcon, UsersIcon, StackIcon, FileTextIcon, ShieldCheckIcon } from 'phosphor-svelte';
 
 	let { onNavigate }: { onNavigate?: () => void } = $props();
 
@@ -8,7 +8,8 @@
 		{ href: '/console/domains', label: 'Domains', icon: GlobeIcon },
 		{ href: '/console/accounts', label: 'Accounts', icon: UsersIcon },
 		{ href: '/console/queue', label: 'Queue', icon: StackIcon },
-		{ href: '/console/logs', label: 'Logs', icon: FileTextIcon }
+		{ href: '/console/logs', label: 'Logs', icon: FileTextIcon },
+		{ href: '/console/security', label: 'Security', icon: ShieldCheckIcon }
 	];
 
 	const path = $derived(page.url.pathname);

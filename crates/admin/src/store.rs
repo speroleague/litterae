@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::config::Argon2Config;
 use common::{Error, Result};
-use crypto::{derive_pk, Salt};
+use crypto::{committing_open, committing_seal, derive_pk, Salt};
 use subtle::ConstantTimeEq;
 
 use crate::types::{Admin, Domain};
@@ -26,7 +26,11 @@ CREATE TABLE IF NOT EXISTS admins (
     salt                    BLOB    NOT NULL,
     derived_key             BLOB    NOT NULL,
     must_change_password    INTEGER NOT NULL DEFAULT 0,
-    created_at              INTEGER NOT NULL
+    created_at              INTEGER NOT NULL,
+    totp_wrapped_secret     BLOB,
+    totp_key_id             INTEGER,
+    totp_enabled            INTEGER NOT NULL DEFAULT 0,
+    totp_recovery_codes     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS domains (
@@ -87,6 +91,41 @@ fn migrate_domains_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Adds columns introduced after this table's initial release, same
+/// additive-only reasoning as `migrate_domains_columns` -- a fresh database
+/// already has them from `SCHEMA`.
+fn migrate_admins_columns(conn: &Connection) -> Result<()> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(admins)")
+        .map_err(storage_err)?;
+    let existing: Vec<String> = stmt
+        .query_map((), |row| row.get::<_, String>(1))
+        .map_err(storage_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(storage_err)?;
+
+    if !existing.iter().any(|c| c == "totp_wrapped_secret") {
+        conn.execute("ALTER TABLE admins ADD COLUMN totp_wrapped_secret BLOB", ())
+            .map_err(storage_err)?;
+    }
+    if !existing.iter().any(|c| c == "totp_key_id") {
+        conn.execute("ALTER TABLE admins ADD COLUMN totp_key_id INTEGER", ())
+            .map_err(storage_err)?;
+    }
+    if !existing.iter().any(|c| c == "totp_enabled") {
+        conn.execute(
+            "ALTER TABLE admins ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+            (),
+        )
+        .map_err(storage_err)?;
+    }
+    if !existing.iter().any(|c| c == "totp_recovery_codes") {
+        conn.execute("ALTER TABLE admins ADD COLUMN totp_recovery_codes TEXT", ())
+            .map_err(storage_err)?;
+    }
+    Ok(())
+}
+
 fn storage_err(e: rusqlite::Error) -> Error {
     Error::Storage(e.to_string())
 }
@@ -108,6 +147,7 @@ struct AdminAuthRow {
     derived_key: Vec<u8>,
     must_change_password: i64,
     created_at: i64,
+    totp_enabled: i64,
 }
 
 impl AdminStore {
@@ -119,6 +159,7 @@ impl AdminStore {
             .map_err(storage_err)?;
         conn.execute_batch(SCHEMA).map_err(storage_err)?;
         migrate_domains_columns(&conn)?;
+        migrate_admins_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -128,6 +169,7 @@ impl AdminStore {
         let conn = Connection::open_in_memory().map_err(storage_err)?;
         conn.execute_batch(SCHEMA).map_err(storage_err)?;
         migrate_domains_columns(&conn)?;
+        migrate_admins_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -191,7 +233,7 @@ impl AdminStore {
         let conn = self.conn.lock().expect("admin store mutex poisoned");
         let row: Option<AdminAuthRow> = conn
             .query_row(
-                "SELECT id, salt, derived_key, must_change_password, created_at FROM admins WHERE username = ?1",
+                "SELECT id, salt, derived_key, must_change_password, created_at, totp_enabled FROM admins WHERE username = ?1",
                 (username,),
                 |row| {
                     Ok(AdminAuthRow {
@@ -200,6 +242,7 @@ impl AdminStore {
                         derived_key: row.get(2)?,
                         must_change_password: row.get(3)?,
                         created_at: row.get(4)?,
+                        totp_enabled: row.get(5)?,
                     })
                 },
             )
@@ -213,6 +256,7 @@ impl AdminStore {
             derived_key: stored_derived,
             must_change_password: must_change,
             created_at,
+            totp_enabled,
         }) = row
         else {
             return Ok(None);
@@ -235,6 +279,7 @@ impl AdminStore {
                 username: username.to_string(),
                 must_change_password: must_change != 0,
                 created_at,
+                totp_enabled: totp_enabled != 0,
             },
             *pk.as_bytes(),
         )))
@@ -270,6 +315,147 @@ impl AdminStore {
         )
         .map_err(storage_err)?;
         Ok(*pk.as_bytes())
+    }
+
+    pub fn is_totp_enabled(&self, admin_id: i64) -> Result<bool> {
+        let conn = self.conn.lock().expect("admin store mutex poisoned");
+        let enabled: i64 = conn
+            .query_row(
+                "SELECT totp_enabled FROM admins WHERE id = ?1",
+                (admin_id,),
+                |row| row.get(0),
+            )
+            .map_err(storage_err)?;
+        Ok(enabled != 0)
+    }
+
+    /// Stores a freshly generated TOTP secret awaiting confirmation, wrapped
+    /// under the admin's password-derived key with the committing
+    /// construction (spec §3.4 -- this is a password-derived wrap, same
+    /// category as `AMK`, not a full-entropy DEK). Clears any prior
+    /// enrollment state; callers must confirm with a live code before
+    /// `totp_enabled` flips on.
+    pub fn set_pending_totp(
+        &self,
+        admin_id: i64,
+        wrap_key: &[u8; 32],
+        secret: &[u8],
+    ) -> Result<()> {
+        let wrapped = committing_seal(wrap_key, 1, secret);
+        let conn = self.conn.lock().expect("admin store mutex poisoned");
+        conn.execute(
+            "UPDATE admins SET totp_wrapped_secret = ?1, totp_key_id = 1, totp_enabled = 0, \
+             totp_recovery_codes = NULL WHERE id = ?2",
+            rusqlite::params![wrapped, admin_id],
+        )
+        .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Decrypts the stored TOTP secret (pending or confirmed -- the column
+    /// is the same either way, `totp_enabled` just gates whether logins
+    /// require it yet).
+    pub fn totp_secret(&self, admin_id: i64, wrap_key: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn.lock().expect("admin store mutex poisoned");
+        let wrapped: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT totp_wrapped_secret FROM admins WHERE id = ?1",
+                (admin_id,),
+                |row| row.get(0),
+            )
+            .map_err(storage_err)?;
+        drop(conn);
+        let Some(wrapped) = wrapped else {
+            return Ok(None);
+        };
+        let secret =
+            committing_open(wrap_key, &wrapped).map_err(|e| Error::Crypto(e.to_string()))?;
+        Ok(Some(secret.to_vec()))
+    }
+
+    /// Flips MFA on after the caller has verified a live code against the
+    /// pending secret, storing the (already-hashed) recovery codes issued
+    /// alongside it.
+    pub fn confirm_totp(&self, admin_id: i64, hashed_recovery_codes: &[String]) -> Result<()> {
+        let codes_json =
+            serde_json::to_string(hashed_recovery_codes).expect("Vec<String> always serializes");
+        let conn = self.conn.lock().expect("admin store mutex poisoned");
+        conn.execute(
+            "UPDATE admins SET totp_enabled = 1, totp_recovery_codes = ?1 WHERE id = ?2",
+            rusqlite::params![codes_json, admin_id],
+        )
+        .map_err(storage_err)?;
+        Ok(())
+    }
+
+    pub fn disable_totp(&self, admin_id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("admin store mutex poisoned");
+        conn.execute(
+            "UPDATE admins SET totp_wrapped_secret = NULL, totp_key_id = NULL, totp_enabled = 0, \
+             totp_recovery_codes = NULL WHERE id = ?1",
+            (admin_id,),
+        )
+        .map_err(storage_err)?;
+        Ok(())
+    }
+
+    pub fn recovery_codes(&self, admin_id: i64) -> Result<Vec<String>> {
+        let conn = self.conn.lock().expect("admin store mutex poisoned");
+        let codes_json: Option<String> = conn
+            .query_row(
+                "SELECT totp_recovery_codes FROM admins WHERE id = ?1",
+                (admin_id,),
+                |row| row.get(0),
+            )
+            .map_err(storage_err)?;
+        Ok(codes_json
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default())
+    }
+
+    /// Persists the remaining recovery codes after one is consumed at MFA
+    /// verification time.
+    pub fn set_recovery_codes(&self, admin_id: i64, codes: &[String]) -> Result<()> {
+        let codes_json = serde_json::to_string(codes).expect("Vec<String> always serializes");
+        let conn = self.conn.lock().expect("admin store mutex poisoned");
+        conn.execute(
+            "UPDATE admins SET totp_recovery_codes = ?1 WHERE id = ?2",
+            rusqlite::params![codes_json, admin_id],
+        )
+        .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Rewraps the TOTP secret under a new password-derived key on password
+    /// change, mirroring `audit::AuditStore::rewrap_audit_key`. A no-op if
+    /// this admin has never enrolled MFA.
+    pub fn rewrap_totp_secret(
+        &self,
+        admin_id: i64,
+        old_wrap_key: &[u8; 32],
+        new_wrap_key: &[u8; 32],
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("admin store mutex poisoned");
+        let row: (Option<Vec<u8>>, Option<i64>) = conn
+            .query_row(
+                "SELECT totp_wrapped_secret, totp_key_id FROM admins WHERE id = ?1",
+                (admin_id,),
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(storage_err)?;
+        let (Some(wrapped), Some(key_id)) = row else {
+            return Ok(());
+        };
+        let secret =
+            committing_open(old_wrap_key, &wrapped).map_err(|e| Error::Crypto(e.to_string()))?;
+        let new_key_id = key_id + 1;
+        let rewrapped = committing_seal(new_wrap_key, new_key_id as u16, &secret);
+        conn.execute(
+            "UPDATE admins SET totp_wrapped_secret = ?1, totp_key_id = ?2 WHERE id = ?3",
+            rusqlite::params![rewrapped, new_key_id, admin_id],
+        )
+        .map_err(storage_err)?;
+        Ok(())
     }
 
     pub fn list_domains(&self) -> Result<Vec<Domain>> {
@@ -543,5 +729,181 @@ mod tests {
             )
             .unwrap();
         assert!(token.is_some_and(|t| !t.is_empty()));
+    }
+
+    #[test]
+    fn migration_adds_totp_columns_for_admins_predating_mfa() {
+        // Simulate an on-disk database from before MFA existed: the
+        // pre-migration schema, with an admin row inserted the old way.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE admins (
+                id                      INTEGER PRIMARY KEY,
+                username                TEXT    NOT NULL UNIQUE,
+                salt                    BLOB    NOT NULL,
+                derived_key             BLOB    NOT NULL,
+                must_change_password    INTEGER NOT NULL DEFAULT 0,
+                created_at              INTEGER NOT NULL
+            );
+            INSERT INTO admins (username, salt, derived_key, created_at)
+            VALUES ('old-admin', x'00', x'00', 1700000000);
+            "#,
+        )
+        .unwrap();
+
+        migrate_admins_columns(&conn).unwrap();
+
+        let enabled: i64 = conn
+            .query_row(
+                "SELECT totp_enabled FROM admins WHERE username = 'old-admin'",
+                (),
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(enabled, 0);
+    }
+
+    #[test]
+    fn totp_secret_round_trips_through_the_wrap_key() {
+        let store = AdminStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        store.bootstrap("admin", b"change-me-please", &cfg).unwrap();
+        let (admin, wrap_key) = store
+            .verify_login("admin", b"change-me-please", &cfg)
+            .unwrap()
+            .unwrap();
+        assert!(!admin.totp_enabled);
+
+        store
+            .set_pending_totp(admin.id, &wrap_key, b"a totp secret!!")
+            .unwrap();
+        let secret = store.totp_secret(admin.id, &wrap_key).unwrap().unwrap();
+        assert_eq!(secret, b"a totp secret!!");
+        assert!(!store.is_totp_enabled(admin.id).unwrap());
+    }
+
+    #[test]
+    fn wrong_wrap_key_cannot_open_the_totp_secret() {
+        let store = AdminStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        store.bootstrap("admin", b"change-me-please", &cfg).unwrap();
+        let (admin, wrap_key) = store
+            .verify_login("admin", b"change-me-please", &cfg)
+            .unwrap()
+            .unwrap();
+        store
+            .set_pending_totp(admin.id, &wrap_key, b"a totp secret!!")
+            .unwrap();
+
+        assert!(store.totp_secret(admin.id, &[9u8; 32]).is_err());
+    }
+
+    #[test]
+    fn confirm_totp_enables_it_and_stores_recovery_codes() {
+        let store = AdminStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        store.bootstrap("admin", b"change-me-please", &cfg).unwrap();
+        let (admin, wrap_key) = store
+            .verify_login("admin", b"change-me-please", &cfg)
+            .unwrap()
+            .unwrap();
+        store
+            .set_pending_totp(admin.id, &wrap_key, b"a totp secret!!")
+            .unwrap();
+
+        let codes = vec!["hash-one".to_string(), "hash-two".to_string()];
+        store.confirm_totp(admin.id, &codes).unwrap();
+
+        assert!(store.is_totp_enabled(admin.id).unwrap());
+        assert_eq!(store.recovery_codes(admin.id).unwrap(), codes);
+    }
+
+    #[test]
+    fn set_recovery_codes_persists_the_shrunk_list() {
+        let store = AdminStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        store.bootstrap("admin", b"change-me-please", &cfg).unwrap();
+        let (admin, wrap_key) = store
+            .verify_login("admin", b"change-me-please", &cfg)
+            .unwrap()
+            .unwrap();
+        store
+            .set_pending_totp(admin.id, &wrap_key, b"a totp secret!!")
+            .unwrap();
+        store
+            .confirm_totp(admin.id, &["a".to_string(), "b".to_string()])
+            .unwrap();
+
+        store
+            .set_recovery_codes(admin.id, &["b".to_string()])
+            .unwrap();
+        assert_eq!(store.recovery_codes(admin.id).unwrap(), vec!["b"]);
+    }
+
+    #[test]
+    fn disable_totp_clears_all_mfa_state() {
+        let store = AdminStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        store.bootstrap("admin", b"change-me-please", &cfg).unwrap();
+        let (admin, wrap_key) = store
+            .verify_login("admin", b"change-me-please", &cfg)
+            .unwrap()
+            .unwrap();
+        store
+            .set_pending_totp(admin.id, &wrap_key, b"a totp secret!!")
+            .unwrap();
+        store.confirm_totp(admin.id, &["a".to_string()]).unwrap();
+
+        store.disable_totp(admin.id).unwrap();
+
+        assert!(!store.is_totp_enabled(admin.id).unwrap());
+        assert!(store.totp_secret(admin.id, &wrap_key).unwrap().is_none());
+        assert!(store.recovery_codes(admin.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rewrap_totp_secret_moves_it_to_the_new_password_key() {
+        let store = AdminStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        store.bootstrap("admin", b"initial-password", &cfg).unwrap();
+        let (admin, old_wrap_key) = store
+            .verify_login("admin", b"initial-password", &cfg)
+            .unwrap()
+            .unwrap();
+        store
+            .set_pending_totp(admin.id, &old_wrap_key, b"a totp secret!!")
+            .unwrap();
+
+        let new_wrap_key = store
+            .change_password(admin.id, b"new-password-here", &cfg)
+            .unwrap();
+        store
+            .rewrap_totp_secret(admin.id, &old_wrap_key, &new_wrap_key)
+            .unwrap();
+
+        assert!(store.totp_secret(admin.id, &old_wrap_key).is_err());
+        let secret = store.totp_secret(admin.id, &new_wrap_key).unwrap().unwrap();
+        assert_eq!(secret, b"a totp secret!!");
+    }
+
+    #[test]
+    fn rewrap_totp_secret_is_a_noop_without_prior_enrollment() {
+        let store = AdminStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        store.bootstrap("admin", b"initial-password", &cfg).unwrap();
+        let (admin, old_wrap_key) = store
+            .verify_login("admin", b"initial-password", &cfg)
+            .unwrap()
+            .unwrap();
+        let new_wrap_key = store
+            .change_password(admin.id, b"new-password-here", &cfg)
+            .unwrap();
+
+        // No `set_pending_totp` call -- must not error just because there's
+        // nothing to rewrap.
+        store
+            .rewrap_totp_secret(admin.id, &old_wrap_key, &new_wrap_key)
+            .unwrap();
     }
 }

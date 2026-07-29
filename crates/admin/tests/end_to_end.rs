@@ -71,6 +71,7 @@ async fn bootstrap_login_forced_reset_domains_accounts_and_queue() {
         cfg.clone(),
         None,
         test_resolver(),
+        "litterae.test".to_string(),
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
@@ -311,6 +312,7 @@ async fn domain_dkim_and_verification_endpoints() {
         cfg,
         None,
         test_resolver(),
+        "litterae.test".to_string(),
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
@@ -475,6 +477,7 @@ async fn logs_endpoint_filters_by_time_and_level() {
         cfg.clone(),
         Some(log_dir.path().to_path_buf()),
         test_resolver(),
+        "litterae.test".to_string(),
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
@@ -553,6 +556,7 @@ async fn logs_endpoint_returns_empty_without_a_log_dir() {
         cfg.clone(),
         None,
         test_resolver(),
+        "litterae.test".to_string(),
     );
     let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
@@ -581,4 +585,248 @@ async fn logs_endpoint_returns_empty_without_a_log_dir() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
     assert!(body.as_array().unwrap().is_empty());
+}
+
+fn totp_code_for(secret_base32: &str) -> String {
+    use totp_rs::{Algorithm, Secret, TOTP};
+    let secret_bytes = Secret::Encoded(secret_base32.to_string())
+        .to_bytes()
+        .unwrap();
+    let totp = TOTP::new(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        secret_bytes,
+        None,
+        "test".to_string(),
+    )
+    .unwrap();
+    totp.generate_current().unwrap()
+}
+
+#[tokio::test]
+async fn mfa_enroll_login_recovery_and_disable_flow() {
+    let admin_store = Arc::new(admin::AdminStore::open_in_memory().unwrap());
+    let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
+    let queue_store = Arc::new(QueueStore::open_in_memory().unwrap());
+    let audit_store = Arc::new(audit::AuditStore::open_in_memory().unwrap());
+    let cfg = Arc::new(fast_argon2());
+    let bootstrap_pk = admin_store
+        .bootstrap("admin", b"pw", &cfg)
+        .unwrap()
+        .unwrap();
+    audit_store.bootstrap_keys(&bootstrap_pk).unwrap();
+
+    let state = AppState::new(
+        admin_store,
+        auth_store,
+        queue_store,
+        audit_store,
+        cfg,
+        None,
+        test_resolver(),
+        "litterae.test".to_string(),
+    );
+    let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+    ));
+
+    // --- Get past the forced password change to a full session. ---
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/login",
+        None,
+        Some(serde_json::json!({"username": "admin", "password": "pw"})),
+    )
+    .await;
+    let token = json_body(resp).await["token"].as_str().unwrap().to_string();
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/change-password",
+        Some(&token),
+        Some(serde_json::json!({"currentPassword": "pw", "newPassword": "strong-test-password"})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // --- Enroll: get a secret, confirm with a live code, receive recovery
+    // codes shown exactly once. ---
+    let resp = request(&app, "POST", "/admin/mfa/enroll", Some(&token), None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let secret = body["secret"].as_str().unwrap().to_string();
+    assert!(body["otpauthUrl"]
+        .as_str()
+        .unwrap()
+        .starts_with("otpauth://"));
+
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/mfa/confirm",
+        Some(&token),
+        Some(serde_json::json!({"code": "000000"})),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "a wrong code must not confirm enrollment"
+    );
+
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/mfa/confirm",
+        Some(&token),
+        Some(serde_json::json!({"code": totp_code_for(&secret)})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let recovery_codes: Vec<String> = json_body(resp)
+        .await
+        .get("recoveryCodes")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(recovery_codes.len(), 8);
+
+    // Re-enrolling while already enabled is refused -- disable first.
+    let resp = request(&app, "POST", "/admin/mfa/enroll", Some(&token), None).await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // --- Next login requires the second factor before anything else works. ---
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/login",
+        None,
+        Some(serde_json::json!({"username": "admin", "password": "strong-test-password"})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["mfaRequired"], true);
+    let pending_token = body["token"].as_str().unwrap().to_string();
+
+    let resp = request(&app, "GET", "/admin/domains", Some(&pending_token), None).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // A wrong code fails and starts the same throttle login uses.
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/mfa/verify",
+        Some(&pending_token),
+        Some(serde_json::json!({"code": "000000"})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/mfa/verify",
+        Some(&pending_token),
+        Some(serde_json::json!({"code": totp_code_for(&secret)})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/mfa/verify",
+        Some(&pending_token),
+        Some(serde_json::json!({"code": totp_code_for(&secret)})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = request(&app, "GET", "/admin/domains", Some(&pending_token), None).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "session should be fully authenticated after MFA verification"
+    );
+
+    // --- A fresh login can instead use a recovery code, which is then
+    // single-use. ---
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/login",
+        None,
+        Some(serde_json::json!({"username": "admin", "password": "strong-test-password"})),
+    )
+    .await;
+    let recovery_session = json_body(resp).await["token"].as_str().unwrap().to_string();
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/mfa/verify",
+        Some(&recovery_session),
+        Some(serde_json::json!({"code": recovery_codes[0]})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/login",
+        None,
+        Some(serde_json::json!({"username": "admin", "password": "strong-test-password"})),
+    )
+    .await;
+    let second_session = json_body(resp).await["token"].as_str().unwrap().to_string();
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/mfa/verify",
+        Some(&second_session),
+        Some(serde_json::json!({"code": recovery_codes[0]})),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "a recovery code must not be reusable"
+    );
+
+    // --- Disabling requires the password again, not just a valid session. ---
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/mfa/disable",
+        Some(&token),
+        Some(serde_json::json!({"password": "wrong-password"})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/mfa/disable",
+        Some(&token),
+        Some(serde_json::json!({"password": "strong-test-password"})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let resp = request(
+        &app,
+        "POST",
+        "/admin/login",
+        None,
+        Some(serde_json::json!({"username": "admin", "password": "strong-test-password"})),
+    )
+    .await;
+    assert_eq!(json_body(resp).await["mfaRequired"], false);
 }

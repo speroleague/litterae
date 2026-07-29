@@ -237,9 +237,29 @@ async fn main() {
             }
         }
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("shutting down");
+            tracing::info!("shutting down (SIGINT)");
+        }
+        _ = terminate() => {
+            tracing::info!("shutting down (SIGTERM)");
         }
     }
+}
+
+// `docker stop` and systemd send SIGTERM, not SIGINT -- without this arm the
+// process only ever reacted to ctrl_c and relied on the container/unit's kill
+// timeout (SIGKILL) to actually stop it, skipping the drain path entirely.
+#[cfg(unix)]
+async fn terminate() {
+    use tokio::signal::unix::{signal, SignalKind};
+    signal(SignalKind::terminate())
+        .expect("install SIGTERM handler")
+        .recv()
+        .await;
+}
+
+#[cfg(not(unix))]
+async fn terminate() {
+    std::future::pending().await
 }
 
 fn insecure_bootstrap_password(password: &str) -> bool {

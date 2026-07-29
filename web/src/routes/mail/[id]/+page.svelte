@@ -24,6 +24,7 @@
 	import { mailNav, refreshMailboxes, bumpRefresh } from '$lib/mailNav.svelte';
 	import { openReply, openDraft } from '$lib/composeState.svelte';
 	import { SNOOZE_PRESETS, NUDGE_PRESETS } from '$lib/snoozePresets';
+	import { showToast } from '$lib/toast.svelte';
 	import MailBodyFrame from '$lib/MailBodyFrame.svelte';
 	import AddressChip from '$lib/AddressChip.svelte';
 
@@ -172,7 +173,7 @@
 			email.snoozedUntil = at;
 			bumpRefresh();
 		} catch {
-			error = 'Could not snooze this message.';
+			showToast('Could not snooze this message.');
 		}
 	}
 
@@ -186,7 +187,7 @@
 			email.snoozedUntil = null;
 			bumpRefresh();
 		} catch {
-			error = 'Could not unsnooze this message.';
+			showToast('Could not unsnooze this message.');
 		}
 	}
 
@@ -199,7 +200,7 @@
 			await setNudge(token, accountId, email.id, at);
 			email.nudgeAt = at;
 		} catch {
-			error = 'Could not set that reminder.';
+			showToast('Could not set that reminder.');
 		}
 	}
 
@@ -212,7 +213,7 @@
 			await clearNudge(token, accountId, email.id);
 			email.nudgeAt = null;
 		} catch {
-			error = 'Could not cancel that reminder.';
+			showToast('Could not cancel that reminder.');
 		}
 	}
 
@@ -262,7 +263,7 @@
 		try {
 			await downloadAttachment(token, blobId, name);
 		} catch {
-			error = 'Could not download this attachment.';
+			showToast('Could not download this attachment.');
 		} finally {
 			downloadingBlobId = null;
 		}

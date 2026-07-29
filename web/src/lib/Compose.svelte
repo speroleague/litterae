@@ -5,6 +5,7 @@
 	import { saveDraft, updateDraft, submitEmail, sendNewEmail, uploadAttachment, formatFileSize, JmapError, type ComposeInput } from '$lib/jmap';
 	import { composeState, closeCompose, parseAddressList, addAttachment, removeAttachment } from '$lib/composeState.svelte';
 	import { bumpRefresh, refreshMailboxes } from '$lib/mailNav.svelte';
+	import { showToast } from '$lib/toast.svelte';
 	import RichTextEditor from './RichTextEditor.svelte';
 	import AddressTypeahead from './AddressTypeahead.svelte';
 
@@ -12,7 +13,6 @@
 	let bccOpen = $state(false);
 	let sending = $state(false);
 	let savingDraft = $state(false);
-	let error = $state<string | null>(null);
 	let uploadingCount = $state(0);
 	let fileInput: HTMLInputElement | undefined = $state();
 
@@ -20,7 +20,6 @@
 		if (composeState.open) {
 			ccOpen = composeState.cc.trim().length > 0;
 			bccOpen = composeState.bcc.trim().length > 0;
-			error = null;
 		}
 	});
 
@@ -35,7 +34,7 @@
 				const uploaded = await uploadAttachment(token, file);
 				addAttachment({ blobId: uploaded.blobId, name: file.name, size: uploaded.size });
 			} catch (err) {
-				error = err instanceof JmapError ? 'One or more files could not be attached (rejected or too large).' : 'Could not attach file.';
+				showToast(err instanceof JmapError ? 'One or more files could not be attached (rejected or too large).' : 'Could not attach file.');
 			} finally {
 				uploadingCount--;
 			}
@@ -59,7 +58,6 @@
 		const token = session.token;
 		const accountId = session.accountId;
 		if (!token || !accountId || savingDraft || sending || uploadingCount > 0) return;
-		error = null;
 		savingDraft = true;
 		try {
 			const input = buildInput();
@@ -71,7 +69,7 @@
 			await refreshMailboxes();
 			closeCompose();
 		} catch {
-			error = 'Could not save this draft.';
+			showToast('Could not save this draft.');
 		} finally {
 			savingDraft = false;
 		}
@@ -82,10 +80,9 @@
 		const accountId = session.accountId;
 		if (!token || !accountId || sending || savingDraft || uploadingCount > 0) return;
 		if (parseAddressList(composeState.to).length === 0) {
-			error = 'Add at least one recipient.';
+			showToast('Add at least one recipient.');
 			return;
 		}
-		error = null;
 		sending = true;
 		try {
 			const input = buildInput();
@@ -100,7 +97,7 @@
 			await refreshMailboxes();
 			closeCompose();
 		} catch {
-			error = 'Could not send this message.';
+			showToast('Could not send this message.');
 		} finally {
 			sending = false;
 		}
@@ -218,10 +215,6 @@
 					</div>
 				{/if}
 			</div>
-
-			{#if error}
-				<p class="px-4 pb-1 text-sm" style="color: var(--danger);">{error}</p>
-			{/if}
 
 			<footer class="flex items-center justify-between gap-2 px-4 py-3" style="border-top: 1px solid var(--border);">
 				<div class="flex items-center gap-2">

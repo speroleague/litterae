@@ -4,6 +4,7 @@
 	import { session } from '$lib/session.svelte';
 	import { getIdentity, setIdentitySignature } from '$lib/jmap';
 	import { setSignature } from '$lib/composeState.svelte';
+	import { showToast } from '$lib/toast.svelte';
 
 	let identityId = $state<string | null>(null);
 	let text = $state('');
@@ -36,14 +37,13 @@
 		if (!token || !accountId || !identityId || saving) return;
 		saving = true;
 		saved = false;
-		error = null;
 		try {
 			await setIdentitySignature(token, accountId, identityId, text);
 			setSignature(text);
 			saved = true;
 			setTimeout(() => (saved = false), 2000);
 		} catch {
-			error = 'Could not save your signature.';
+			showToast('Could not save your signature.');
 		} finally {
 			saving = false;
 		}

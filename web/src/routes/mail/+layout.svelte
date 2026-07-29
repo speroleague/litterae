@@ -9,6 +9,7 @@
 	import { setSignature } from '$lib/composeState.svelte';
 	import MailSidebar from '$lib/MailSidebar.svelte';
 	import Compose from '$lib/Compose.svelte';
+	import Toast from '$lib/Toast.svelte';
 
 	let { children } = $props();
 
@@ -91,4 +92,5 @@
 		</div>
 	</div>
 	<Compose />
+	<Toast />
 {/if}

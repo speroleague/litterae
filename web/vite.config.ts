@@ -17,12 +17,16 @@ const trustedScriptHash: `sha256-${string}` = `sha256-${createHash('sha256').upd
 // Caddy reverse-proxies both from the same origin, see docker-compose.yml).
 // Only affects `vite dev`; a static `vite build` has no server to proxy.
 const devApiTarget = process.env.VITE_DEV_API_PROXY_TARGET ?? 'http://127.0.0.1:8620';
+// The admin console (/console) is a separate listener from JMAP/auth, so it
+// needs its own proxy target -- same reasoning as `devApiTarget` above.
+const devAdminApiTarget = process.env.VITE_DEV_ADMIN_API_PROXY_TARGET ?? 'http://127.0.0.1:8621';
 
 export default defineConfig({
 	server: {
 		proxy: {
 			'/auth': devApiTarget,
-			'/jmap': devApiTarget
+			'/jmap': devApiTarget,
+			'/admin': devAdminApiTarget
 		}
 	},
 	plugins: [

@@ -3,6 +3,7 @@
 	import { session } from '$lib/session.svelte';
 	import { createContact, updateContact, deleteContact, JmapError, type ContactObject } from '$lib/jmap';
 	import { loadContacts } from '$lib/contactsState.svelte';
+	import { showToast } from '$lib/toast.svelte';
 	import Dialog from './Dialog.svelte';
 
 	let {
@@ -24,13 +25,11 @@
 	let name = $state('');
 	let email = $state('');
 	let saving = $state(false);
-	let error = $state<string | null>(null);
 
 	$effect(() => {
 		if (open) {
 			name = contact?.name ?? initialName;
 			email = contact?.email ?? initialEmail;
-			error = null;
 		}
 	});
 
@@ -44,7 +43,6 @@
 		const token = session.token;
 		const accountId = session.accountId;
 		if (!token || !accountId || saving) return;
-		error = null;
 		saving = true;
 		try {
 			if (contact) {
@@ -55,7 +53,7 @@
 			await loadContacts();
 			close();
 		} catch (err) {
-			error = err instanceof JmapError ? err.message : 'Could not save this contact.';
+			showToast(err instanceof JmapError ? err.message : 'Could not save this contact.');
 		} finally {
 			saving = false;
 		}
@@ -72,7 +70,7 @@
 			await loadContacts();
 			close();
 		} catch {
-			error = 'Could not remove this contact.';
+			showToast('Could not remove this contact.');
 		} finally {
 			saving = false;
 		}
@@ -107,9 +105,6 @@
 				style="background: var(--surface-sunk); border-color: var(--border); color: var(--text);"
 			/>
 		</div>
-		{#if error}
-			<p class="text-sm" style="color: var(--danger);">{error}</p>
-		{/if}
 		<div class="flex items-center justify-between gap-2">
 			{#if contact}
 				<button

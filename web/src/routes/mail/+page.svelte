@@ -39,6 +39,7 @@
 	import { mailNav, refreshMailboxes, toggleDrawer, FLAGGED_VIEW, UNREAD_VIEW, SNOOZED_VIEW } from '$lib/mailNav.svelte';
 	import { openDraft, openNewMessage } from '$lib/composeState.svelte';
 	import { SNOOZE_PRESETS } from '$lib/snoozePresets';
+	import { showToast } from '$lib/toast.svelte';
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 
 	// Focuses the search input when it appears, without the accessibility
@@ -178,7 +179,7 @@
 			emails = [...emails, ...page.emails];
 			total = page.total;
 		} catch {
-			error = 'Could not load more mail.';
+			showToast('Could not load more mail.');
 		} finally {
 			loadingMore = false;
 		}

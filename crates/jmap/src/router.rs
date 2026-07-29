@@ -101,6 +101,14 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/auth/unlock", post(handlers::unlock))
         .route("/auth/lock", post(handlers::lock))
+        .route(
+            "/auth/app-passwords",
+            get(handlers::list_app_passwords).post(handlers::create_app_password),
+        )
+        .route(
+            "/auth/app-passwords/{id}",
+            axum::routing::delete(handlers::revoke_app_password),
+        )
         .route("/jmap/session", get(handlers::jmap_session))
         .route("/jmap/api", post(handlers::jmap_api))
         .route("/jmap/sse", get(handlers::sse))

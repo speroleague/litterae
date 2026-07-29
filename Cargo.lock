@@ -150,7 +150,10 @@ version = "0.1.0"
 dependencies = [
  "common",
  "crypto",
+ "hex",
+ "rand 0.10.2",
  "rusqlite",
+ "serde",
  "zeroize",
 ]
 

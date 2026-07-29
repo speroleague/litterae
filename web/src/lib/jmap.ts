@@ -119,6 +119,46 @@ export async function lock(token: string): Promise<void> {
 	});
 }
 
+export interface AppPasswordSummary {
+	id: number;
+	label: string;
+	/** `full` unlocks JMAP + submission, same as the primary password.
+	 * `submission` only authenticates SMTP submission (a send-only relay
+	 * or MUA), not the JMAP login this app itself uses. */
+	scope: 'full' | 'submission';
+	createdAt: number;
+	lastUsedAt: number | null;
+}
+
+export async function listAppPasswords(token: string): Promise<AppPasswordSummary[]> {
+	return request('/auth/app-passwords', { headers: { authorization: `Bearer ${token}` } }, true);
+}
+
+/** The plaintext `password` is present only in this response -- the server
+ * never stores or re-derives it, so there's no way to retrieve it again. */
+export async function createAppPassword(
+	token: string,
+	label: string,
+	scope: 'full' | 'submission'
+): Promise<AppPasswordSummary & { password: string }> {
+	return request(
+		'/auth/app-passwords',
+		{
+			method: 'POST',
+			headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+			body: JSON.stringify({ label, scope })
+		},
+		true
+	);
+}
+
+export async function revokeAppPassword(token: string, id: number): Promise<void> {
+	await fetch(`${JMAP_URL}/auth/app-passwords/${id}`, {
+		method: 'DELETE',
+		headers: { authorization: `Bearer ${token}` }
+	});
+}
+
 type MethodResponse = [string, Record<string, unknown>, string];
 
 async function callApi(token: string, methodCalls: [string, unknown, string][]): Promise<MethodResponse[]> {

@@ -350,12 +350,15 @@ where
     let password = password.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        auth_store.unlock(&account_for_unlock, password.as_bytes(), &config)
+        // Both scopes may authenticate here -- `Full` and `Submission`
+        // app passwords are both allowed to send; only JMAP login (`auth::
+        // handlers::unlock`) restricts to `Full`.
+        auth_store.unlock_any(&account_for_unlock, password.as_bytes(), &config)
     })
     .await
     .map_err(|_| ())?;
     match result {
-        Ok(_unlocked) => {
+        Ok((_unlocked, _scope)) => {
             deps.login_throttle.record_success(&authcid);
             let _ = deps.audit.log("auth.submission", &authcid);
             Ok(Some(account))

@@ -3,7 +3,9 @@
 //! turns a password back into the AMK and account private key.
 
 pub mod account;
+pub mod app_password;
 pub mod store;
 
 pub use account::Account;
+pub use app_password::{AppPasswordScope, AppPasswordSummary};
 pub use store::{AuthStore, UnlockedAccount};

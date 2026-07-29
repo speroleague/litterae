@@ -284,7 +284,12 @@ async fn html_email_is_sanitized_and_images_blocked_over_jmap() {
     let cfg = fast_argon2();
 
     let account = auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
 
     let raw = b"From: sender@example.net\r\nTo: alice@example.com\r\nSubject: HTML\r\n\
@@ -304,7 +309,11 @@ async fn html_email_is_sanitized_and_images_blocked_over_jmap() {
             rcpt_to: "alice@example.com".into(),
             remote_ip: "203.0.113.5".parse().unwrap(),
         },
-        &AuthResults { spf: "pass".into(), dkim: "pass".into(), dmarc: "pass".into() },
+        &AuthResults {
+            spf: "pass".into(),
+            dkim: "pass".into(),
+            dmarc: "pass".into(),
+        },
         raw,
         1_700_000_000,
         None,
@@ -358,7 +367,10 @@ async fn html_email_is_sanitized_and_images_blocked_over_jmap() {
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    let email_id = body["methodResponses"][0][1]["ids"][0].as_str().unwrap().to_string();
+    let email_id = body["methodResponses"][0][1]["ids"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let method_calls = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
@@ -394,7 +406,12 @@ async fn email_get_properties_filter_skips_attachments_and_html_when_not_request
     let cfg = fast_argon2();
 
     let account = auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
 
     let raw = b"From: sender@example.net\r\nTo: alice@example.com\r\nSubject: Invoice\r\n\
@@ -422,7 +439,11 @@ async fn email_get_properties_filter_skips_attachments_and_html_when_not_request
             rcpt_to: "alice@example.com".into(),
             remote_ip: "203.0.113.5".parse().unwrap(),
         },
-        &AuthResults { spf: "pass".into(), dkim: "pass".into(), dmarc: "pass".into() },
+        &AuthResults {
+            spf: "pass".into(),
+            dkim: "pass".into(),
+            dmarc: "pass".into(),
+        },
         raw,
         1_700_000_000,
         None,
@@ -476,7 +497,10 @@ async fn email_get_properties_filter_skips_attachments_and_html_when_not_request
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    let email_id = body["methodResponses"][0][1]["ids"][0].as_str().unwrap().to_string();
+    let email_id = body["methodResponses"][0][1]["ids"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // A list-view-shaped request (no bodyHtml/attachments in `properties`)
     // gets neither back, even though the message has both.
@@ -532,7 +556,12 @@ async fn inbound_attachment_metadata_is_exposed_over_jmap() {
     let cfg = fast_argon2();
 
     let account = auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
 
     let raw = b"From: sender@example.net\r\nTo: alice@example.com\r\nSubject: Invoice\r\n\
@@ -560,7 +589,11 @@ async fn inbound_attachment_metadata_is_exposed_over_jmap() {
             rcpt_to: "alice@example.com".into(),
             remote_ip: "203.0.113.5".parse().unwrap(),
         },
-        &AuthResults { spf: "pass".into(), dkim: "pass".into(), dmarc: "pass".into() },
+        &AuthResults {
+            spf: "pass".into(),
+            dkim: "pass".into(),
+            dmarc: "pass".into(),
+        },
         raw,
         1_700_000_000,
         None,
@@ -614,7 +647,10 @@ async fn inbound_attachment_metadata_is_exposed_over_jmap() {
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    let email_id = body["methodResponses"][0][1]["ids"][0].as_str().unwrap().to_string();
+    let email_id = body["methodResponses"][0][1]["ids"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let method_calls = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
@@ -654,7 +690,12 @@ async fn download_is_a_uniform_404_across_accounts_for_message_and_upload_blobs(
     let cfg = fast_argon2();
 
     let alice = auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
     auth_store
         .provision("bob", "example.com", b"another horse battery staple", &cfg)
@@ -685,7 +726,11 @@ async fn download_is_a_uniform_404_across_accounts_for_message_and_upload_blobs(
             rcpt_to: "alice@example.com".into(),
             remote_ip: "203.0.113.5".parse().unwrap(),
         },
-        &AuthResults { spf: "pass".into(), dkim: "pass".into(), dmarc: "pass".into() },
+        &AuthResults {
+            spf: "pass".into(),
+            dkim: "pass".into(),
+            dmarc: "pass".into(),
+        },
         raw,
         1_700_000_000,
         None,
@@ -835,7 +880,12 @@ async fn contact_crud_round_trip_and_rejects_duplicate_email() {
     let cfg = fast_argon2();
 
     auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
 
     let state = AppState::new(
@@ -934,7 +984,9 @@ async fn contact_crud_round_trip_and_rejects_duplicate_email() {
     }));
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    assert!(body["methodResponses"][0][1]["updated"].get(&contact_id).is_some());
+    assert!(body["methodResponses"][0][1]["updated"]
+        .get(&contact_id)
+        .is_some());
 
     let req = call(serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
@@ -944,7 +996,10 @@ async fn contact_crud_round_trip_and_rejects_duplicate_email() {
     }));
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    assert_eq!(body["methodResponses"][0][1]["list"][0]["name"], "Bob Smith");
+    assert_eq!(
+        body["methodResponses"][0][1]["list"][0]["name"],
+        "Bob Smith"
+    );
 
     // 5. Destroy it, then confirm it's gone.
     let req = call(serde_json::json!({
@@ -965,7 +1020,10 @@ async fn contact_crud_round_trip_and_rejects_duplicate_email() {
     }));
     let resp = app.oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    assert!(body["methodResponses"][0][1]["list"].as_array().unwrap().is_empty());
+    assert!(body["methodResponses"][0][1]["list"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 /// `snoozeUntil`/`nudgeAt` (spec §8.6) over the real HTTP surface: setting
@@ -984,7 +1042,12 @@ async fn snooze_and_nudge_schedule_events_and_snooze_hides_from_query() {
     let cfg = fast_argon2();
 
     let account = auth_store
-        .provision("alice", "example.com", b"correct horse battery staple", &cfg)
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
         .unwrap();
 
     delivery::deliver(
@@ -1061,7 +1124,10 @@ async fn snooze_and_nudge_schedule_events_and_snooze_hides_from_query() {
     }));
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    let email_id = body["methodResponses"][0][1]["ids"][0].as_str().unwrap().to_string();
+    let email_id = body["methodResponses"][0][1]["ids"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Snooze: sets $snoozed (client's own responsibility, same call) and
     // schedules a snooze_resurface event.
@@ -1076,7 +1142,9 @@ async fn snooze_and_nudge_schedule_events_and_snooze_hides_from_query() {
     }));
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    assert!(body["methodResponses"][0][1]["updated"].get(&email_id).is_some());
+    assert!(body["methodResponses"][0][1]["updated"]
+        .get(&email_id)
+        .is_some());
 
     let pending = queue_store
         .pending_events_for_account(account.id, queue::ScheduledKind::SnoozeResurface)
@@ -1092,7 +1160,10 @@ async fn snooze_and_nudge_schedule_events_and_snooze_hides_from_query() {
     }));
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    assert!(body["methodResponses"][0][1]["ids"].as_array().unwrap().is_empty());
+    assert!(body["methodResponses"][0][1]["ids"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 
     // Email/get reports snoozedUntil.
     let req = call(serde_json::json!({
@@ -1101,7 +1172,10 @@ async fn snooze_and_nudge_schedule_events_and_snooze_hides_from_query() {
     }));
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    assert_eq!(body["methodResponses"][0][1]["list"][0]["snoozedUntil"], fire_at);
+    assert_eq!(
+        body["methodResponses"][0][1]["list"][0]["snoozedUntil"],
+        fire_at
+    );
 
     // A nudge can be scheduled independently of the snooze.
     let req = call(serde_json::json!({
@@ -1114,7 +1188,9 @@ async fn snooze_and_nudge_schedule_events_and_snooze_hides_from_query() {
     }));
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    assert!(body["methodResponses"][0][1]["updated"].get(&email_id).is_some());
+    assert!(body["methodResponses"][0][1]["updated"]
+        .get(&email_id)
+        .is_some());
     let pending_nudges = queue_store
         .pending_events_for_account(account.id, queue::ScheduledKind::FollowupNudge)
         .unwrap();
@@ -1132,7 +1208,9 @@ async fn snooze_and_nudge_schedule_events_and_snooze_hides_from_query() {
     }));
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    assert!(body["methodResponses"][0][1]["updated"].get(&email_id).is_some());
+    assert!(body["methodResponses"][0][1]["updated"]
+        .get(&email_id)
+        .is_some());
 
     assert!(queue_store
         .pending_events_for_account(account.id, queue::ScheduledKind::SnoozeResurface)
@@ -1149,5 +1227,162 @@ async fn snooze_and_nudge_schedule_events_and_snooze_hides_from_query() {
     }));
     let resp = app.oneshot(req).await.unwrap();
     let body = json_body(resp).await;
-    assert_eq!(body["methodResponses"][0][1]["ids"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        body["methodResponses"][0][1]["ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn app_passwords_can_be_created_used_and_revoked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
+    let cfg = fast_argon2();
+    auth_store
+        .provision(
+            "alice",
+            "example.com",
+            b"correct horse battery staple",
+            &cfg,
+        )
+        .unwrap();
+
+    let state = AppState::new(
+        auth_store,
+        Arc::new(BlobStore::open(tmp.path()).unwrap()),
+        Arc::new(MetadataStore::open_in_memory().unwrap()),
+        Arc::new(audit::AuditStore::open_in_memory().unwrap()),
+        Arc::new(cfg),
+        Arc::new(queue::QueueStore::open_in_memory().unwrap()),
+        Arc::new(common::changes::ChangeNotifier::new()),
+        None,
+        25 * 1024 * 1024,
+    );
+    let app = build_router(state).layer(axum::extract::connect_info::MockConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+    ));
+
+    async fn unlock(app: &axum::Router, password: &str) -> Option<String> {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/auth/unlock")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"local_part": "alice", "domain": "example.com", "password": password})
+                    .to_string(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        if resp.status() != StatusCode::OK {
+            return None;
+        }
+        Some(json_body(resp).await["token"].as_str().unwrap().to_string())
+    }
+
+    let primary_token = unlock(&app, "correct horse battery staple").await.unwrap();
+
+    // Create a full-scope app password.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/app-passwords")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {primary_token}"))
+        .body(Body::from(
+            serde_json::json!({"label": "Thunderbird", "scope": "full"}).to_string(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["label"], "Thunderbird");
+    assert_eq!(body["scope"], "full");
+    let full_password = body["password"].as_str().unwrap().to_string();
+    let full_id = body["id"].as_i64().unwrap();
+
+    // Create a submission-scoped app password.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/app-passwords")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {primary_token}"))
+        .body(Body::from(
+            serde_json::json!({"label": "relay", "scope": "submission"}).to_string(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let submission_password = json_body(resp).await["password"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Listing shows both, without ever exposing the secret again.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/auth/app-passwords")
+        .header("authorization", format!("Bearer {primary_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let list = json_body(resp).await;
+    let labels: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(labels.len(), 2);
+    assert!(labels.contains(&"Thunderbird"));
+    assert!(labels.contains(&"relay"));
+    assert!(list[0].get("password").is_none());
+
+    // A full-scope app password unlocks JMAP just like the primary password.
+    let via_full = unlock(&app, &full_password).await.unwrap();
+    let req = Request::builder()
+        .method("GET")
+        .uri("/jmap/session")
+        .header("authorization", format!("Bearer {via_full}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // A submission-scoped app password must not unlock JMAP -- same 401 as
+    // a wrong password, not a distinct error.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/unlock")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"local_part": "alice", "domain": "example.com", "password": submission_password})
+                .to_string(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Revoking the full-scope password invalidates it for future unlocks
+    // (the already-open session above is untouched -- same as a password
+    // change not retroactively killing other open sessions).
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/auth/app-passwords/{full_id}"))
+        .header("authorization", format!("Bearer {primary_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    assert!(unlock(&app, &full_password).await.is_none());
+
+    // The primary password is unaffected by revoking a different
+    // credential -- wait out the login throttle's lockout window first
+    // (the failed attempts above against the shared "alice@example.com"
+    // identity started its exponential backoff, same mechanism the login
+    // end-to-end test already waits out).
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert!(unlock(&app, "correct horse battery staple").await.is_some());
 }

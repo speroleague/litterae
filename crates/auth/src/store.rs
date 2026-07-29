@@ -3,6 +3,7 @@
 //! coexist safely); `store::MetadataStore` owns the messages/blob-refs
 //! tables, this owns `accounts`.
 
+use rand::RngExt;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
@@ -17,6 +18,7 @@ use crypto::{
 use zeroize::Zeroizing;
 
 use crate::account::Account;
+use crate::app_password::{AppPasswordScope, AppPasswordSummary};
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -30,6 +32,18 @@ CREATE TABLE IF NOT EXISTS accounts (
     wrapped_account_priv    BLOB    NOT NULL,
     created_at              INTEGER NOT NULL,
     UNIQUE(local_part, domain)
+);
+
+CREATE TABLE IF NOT EXISTS app_passwords (
+    id              INTEGER PRIMARY KEY,
+    account_id      INTEGER NOT NULL,
+    label           TEXT    NOT NULL,
+    scope           TEXT    NOT NULL,
+    key_id          INTEGER NOT NULL,
+    salt            BLOB    NOT NULL,
+    wrapped_amk     BLOB    NOT NULL,
+    created_at      INTEGER NOT NULL,
+    last_used_at    INTEGER
 );
 "#;
 
@@ -54,8 +68,24 @@ fn migrate_accounts_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// 160 bits -- generated, not user-chosen, so this doesn't need Argon2id's
+/// margin against a weak-input dictionary attack the way a real password
+/// does; it needs to be easy to paste into a client, not memorable.
+const APP_PASSWORD_SECRET_LEN: usize = 20;
+
 fn storage_err(e: rusqlite::Error) -> Error {
     Error::Storage(e.to_string())
+}
+
+/// Shared tail of `unlock`/`unlock_any`: once an AMK has been recovered by
+/// whichever credential matched, unwrapping the account private key is
+/// identical regardless of which one it was.
+fn finish_unlock(amk: AccountMasterKey, wrapped_account_priv: &[u8]) -> Result<UnlockedAccount> {
+    let priv_bytes =
+        unwrap_priv_key(&amk, wrapped_account_priv).map_err(|e| Error::Crypto(e.to_string()))?;
+    let mut account_priv = Zeroizing::new([0u8; crypto::hpke_seal::PRIVATE_KEY_LEN]);
+    account_priv.copy_from_slice(&priv_bytes);
+    Ok(UnlockedAccount { amk, account_priv })
 }
 
 fn now_unix() -> i64 {
@@ -240,12 +270,157 @@ impl AuthStore {
             derive_pk(password, &salt, argon2_config).map_err(|e| Error::Crypto(e.to_string()))?;
         let amk =
             unwrap_amk(&pk, &account.wrapped_amk).map_err(|e| Error::Crypto(e.to_string()))?;
-        let priv_bytes = unwrap_priv_key(&amk, &account.wrapped_account_priv)
-            .map_err(|e| Error::Crypto(e.to_string()))?;
+        finish_unlock(amk, &account.wrapped_account_priv)
+    }
 
-        let mut account_priv = Zeroizing::new([0u8; crypto::hpke_seal::PRIVATE_KEY_LEN]);
-        account_priv.copy_from_slice(&priv_bytes);
-        Ok(UnlockedAccount { amk, account_priv })
+    /// Tries the primary password first, then each of the account's app
+    /// passwords (spec §8.4) in turn -- a bare credential has no way to say
+    /// which slot it belongs to, so this is the only option. Cost is one
+    /// Argon2id derivation per candidate tried; fine for the small number
+    /// of app passwords a personal account actually has. Returns which
+    /// scope matched so the caller (JMAP login vs. submission auth) can
+    /// decide whether that scope is allowed on this listener.
+    pub fn unlock_any(
+        &self,
+        account: &Account,
+        credential: &[u8],
+        argon2_config: &Argon2Config,
+    ) -> Result<(UnlockedAccount, AppPasswordScope)> {
+        if let Ok(unlocked) = self.unlock(account, credential, argon2_config) {
+            return Ok((unlocked, AppPasswordScope::Full));
+        }
+
+        let candidates: Vec<(i64, Vec<u8>, Vec<u8>, String)> = {
+            let conn = self.conn.lock().expect("auth store mutex poisoned");
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, salt, wrapped_amk, scope FROM app_passwords WHERE account_id = ?1",
+                )
+                .map_err(storage_err)?;
+            let rows = stmt
+                .query_map((account.id,), |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .map_err(storage_err)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(storage_err)?
+        };
+
+        for (id, salt_bytes, wrapped_amk, scope_str) in candidates {
+            if salt_bytes.len() != crypto::kdf::SALT_LEN {
+                continue;
+            }
+            let mut salt_arr = [0u8; crypto::kdf::SALT_LEN];
+            salt_arr.copy_from_slice(&salt_bytes);
+            let salt = Salt::from_bytes(salt_arr);
+            let pk = derive_pk(credential, &salt, argon2_config)
+                .map_err(|e| Error::Crypto(e.to_string()))?;
+            let Ok(amk) = unwrap_amk(&pk, &wrapped_amk) else {
+                continue;
+            };
+            let scope = AppPasswordScope::parse(&scope_str).unwrap_or(AppPasswordScope::Full);
+            let unlocked = finish_unlock(amk, &account.wrapped_account_priv)?;
+            self.touch_app_password(id)?;
+            return Ok((unlocked, scope));
+        }
+
+        Err(Error::Crypto("no matching credential".to_string()))
+    }
+
+    /// Mints a new app password: a random, high-entropy secret that
+    /// independently wraps the *same* AMK the caller already has open
+    /// (spec §3.2) under its own salt/key. Returns the plaintext secret
+    /// exactly once -- it is never stored, only its wrap.
+    pub fn create_app_password(
+        &self,
+        account_id: i64,
+        amk: &AccountMasterKey,
+        label: &str,
+        scope: AppPasswordScope,
+        argon2_config: &Argon2Config,
+    ) -> Result<(AppPasswordSummary, String)> {
+        let mut secret_bytes = [0u8; APP_PASSWORD_SECRET_LEN];
+        rand::rng().fill(&mut secret_bytes);
+        let plaintext = hex::encode(secret_bytes);
+
+        let salt = Salt::generate();
+        let pk = derive_pk(plaintext.as_bytes(), &salt, argon2_config)
+            .map_err(|e| Error::Crypto(e.to_string()))?;
+        let wrapped_amk = wrap_amk(&pk, 1, amk);
+
+        let created_at = now_unix();
+        let conn = self.conn.lock().expect("auth store mutex poisoned");
+        conn.execute(
+            "INSERT INTO app_passwords (account_id, label, scope, key_id, salt, wrapped_amk, created_at)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6)",
+            rusqlite::params![
+                account_id,
+                label,
+                scope.as_str(),
+                salt.0.as_slice(),
+                wrapped_amk,
+                created_at
+            ],
+        )
+        .map_err(storage_err)?;
+        let id = conn.last_insert_rowid();
+
+        Ok((
+            AppPasswordSummary {
+                id,
+                label: label.to_string(),
+                scope,
+                created_at,
+                last_used_at: None,
+            },
+            plaintext,
+        ))
+    }
+
+    pub fn list_app_passwords(&self, account_id: i64) -> Result<Vec<AppPasswordSummary>> {
+        let conn = self.conn.lock().expect("auth store mutex poisoned");
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, label, scope, created_at, last_used_at FROM app_passwords \
+                 WHERE account_id = ?1 ORDER BY created_at DESC",
+            )
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map((account_id,), |row| {
+                let scope_str: String = row.get(2)?;
+                Ok(AppPasswordSummary {
+                    id: row.get(0)?,
+                    label: row.get(1)?,
+                    scope: AppPasswordScope::parse(&scope_str).unwrap_or(AppPasswordScope::Full),
+                    created_at: row.get(3)?,
+                    last_used_at: row.get(4)?,
+                })
+            })
+            .map_err(storage_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err)
+    }
+
+    /// Scoped to `account_id` so one account can't revoke another's app
+    /// password by guessing an id.
+    pub fn revoke_app_password(&self, account_id: i64, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("auth store mutex poisoned");
+        conn.execute(
+            "DELETE FROM app_passwords WHERE id = ?1 AND account_id = ?2",
+            (id, account_id),
+        )
+        .map_err(storage_err)?;
+        Ok(())
+    }
+
+    fn touch_app_password(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("auth store mutex poisoned");
+        conn.execute(
+            "UPDATE app_passwords SET last_used_at = ?1 WHERE id = ?2",
+            (now_unix(), id),
+        )
+        .map_err(storage_err)?;
+        Ok(())
     }
 
     /// Raw sealed signature blob (`crypto::aead_seal`'d under the account's
@@ -437,5 +612,197 @@ mod tests {
 
         store.delete_account(account.id).unwrap();
         assert!(store.find_by_id(account.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn app_password_unlocks_the_same_amk_as_the_primary_password() {
+        let store = AuthStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        let account = store
+            .provision("alice", "example.com", b"primary password", &cfg)
+            .unwrap();
+        let primary = store.unlock(&account, b"primary password", &cfg).unwrap();
+
+        let (summary, plaintext) = store
+            .create_app_password(
+                account.id,
+                &primary.amk,
+                "Thunderbird",
+                AppPasswordScope::Full,
+                &cfg,
+            )
+            .unwrap();
+        assert_eq!(summary.label, "Thunderbird");
+        assert_eq!(summary.scope, AppPasswordScope::Full);
+        assert!(summary.last_used_at.is_none());
+
+        let (unlocked, scope) = store
+            .unlock_any(&account, plaintext.as_bytes(), &cfg)
+            .unwrap();
+        assert_eq!(scope, AppPasswordScope::Full);
+        assert_eq!(unlocked.amk.as_bytes(), primary.amk.as_bytes());
+    }
+
+    #[test]
+    fn unlock_any_reports_which_scope_matched() {
+        let store = AuthStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        let account = store
+            .provision("alice", "example.com", b"pw", &cfg)
+            .unwrap();
+        let primary = store.unlock(&account, b"pw", &cfg).unwrap();
+        let (_, plaintext) = store
+            .create_app_password(
+                account.id,
+                &primary.amk,
+                "relay",
+                AppPasswordScope::Submission,
+                &cfg,
+            )
+            .unwrap();
+
+        let (_, scope) = store
+            .unlock_any(&account, plaintext.as_bytes(), &cfg)
+            .unwrap();
+        assert_eq!(scope, AppPasswordScope::Submission);
+
+        let (_, primary_scope) = store.unlock_any(&account, b"pw", &cfg).unwrap();
+        assert_eq!(primary_scope, AppPasswordScope::Full);
+    }
+
+    #[test]
+    fn unlock_any_fails_closed_for_a_wrong_credential() {
+        let store = AuthStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        let account = store
+            .provision("alice", "example.com", b"pw", &cfg)
+            .unwrap();
+        let primary = store.unlock(&account, b"pw", &cfg).unwrap();
+        store
+            .create_app_password(
+                account.id,
+                &primary.amk,
+                "relay",
+                AppPasswordScope::Submission,
+                &cfg,
+            )
+            .unwrap();
+
+        assert!(store.unlock_any(&account, b"nope", &cfg).is_err());
+    }
+
+    #[test]
+    fn revoked_app_password_no_longer_unlocks() {
+        let store = AuthStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        let account = store
+            .provision("alice", "example.com", b"pw", &cfg)
+            .unwrap();
+        let primary = store.unlock(&account, b"pw", &cfg).unwrap();
+        let (summary, plaintext) = store
+            .create_app_password(
+                account.id,
+                &primary.amk,
+                "old laptop",
+                AppPasswordScope::Full,
+                &cfg,
+            )
+            .unwrap();
+
+        store.revoke_app_password(account.id, summary.id).unwrap();
+
+        assert!(store
+            .unlock_any(&account, plaintext.as_bytes(), &cfg)
+            .is_err());
+        assert!(store.list_app_passwords(account.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn revoke_is_scoped_to_the_owning_account() {
+        let store = AuthStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        let alice = store
+            .provision("alice", "example.com", b"pw", &cfg)
+            .unwrap();
+        let bob = store.provision("bob", "example.com", b"pw", &cfg).unwrap();
+        let alice_unlocked = store.unlock(&alice, b"pw", &cfg).unwrap();
+        let (summary, plaintext) = store
+            .create_app_password(
+                alice.id,
+                &alice_unlocked.amk,
+                "phone",
+                AppPasswordScope::Full,
+                &cfg,
+            )
+            .unwrap();
+
+        // Bob can't revoke Alice's app password by guessing its id.
+        store.revoke_app_password(bob.id, summary.id).unwrap();
+        assert!(store.unlock_any(&alice, plaintext.as_bytes(), &cfg).is_ok());
+
+        store.revoke_app_password(alice.id, summary.id).unwrap();
+        assert!(store
+            .unlock_any(&alice, plaintext.as_bytes(), &cfg)
+            .is_err());
+    }
+
+    #[test]
+    fn list_app_passwords_is_scoped_per_account() {
+        let store = AuthStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        let alice = store
+            .provision("alice", "example.com", b"pw", &cfg)
+            .unwrap();
+        let bob = store.provision("bob", "example.com", b"pw", &cfg).unwrap();
+        let alice_unlocked = store.unlock(&alice, b"pw", &cfg).unwrap();
+        let bob_unlocked = store.unlock(&bob, b"pw", &cfg).unwrap();
+        store
+            .create_app_password(
+                alice.id,
+                &alice_unlocked.amk,
+                "a",
+                AppPasswordScope::Full,
+                &cfg,
+            )
+            .unwrap();
+        store
+            .create_app_password(bob.id, &bob_unlocked.amk, "b", AppPasswordScope::Full, &cfg)
+            .unwrap();
+
+        let alice_list = store.list_app_passwords(alice.id).unwrap();
+        assert_eq!(alice_list.len(), 1);
+        assert_eq!(alice_list[0].label, "a");
+    }
+
+    #[test]
+    fn using_an_app_password_records_last_used_at() {
+        let store = AuthStore::open_in_memory().unwrap();
+        let cfg = fast_config();
+        let account = store
+            .provision("alice", "example.com", b"pw", &cfg)
+            .unwrap();
+        let primary = store.unlock(&account, b"pw", &cfg).unwrap();
+        let (summary, plaintext) = store
+            .create_app_password(
+                account.id,
+                &primary.amk,
+                "phone",
+                AppPasswordScope::Full,
+                &cfg,
+            )
+            .unwrap();
+        assert!(summary.last_used_at.is_none());
+
+        store
+            .unlock_any(&account, plaintext.as_bytes(), &cfg)
+            .unwrap();
+
+        let refreshed = store
+            .list_app_passwords(account.id)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == summary.id)
+            .unwrap();
+        assert!(refreshed.last_used_at.is_some());
     }
 }

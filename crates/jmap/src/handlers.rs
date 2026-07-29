@@ -70,13 +70,17 @@ pub async fn unlock(
     let password = req.password;
     let unlock_result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        auth_store.unlock(&account_for_unlock, password.as_bytes(), &argon2_config)
+        auth_store.unlock_any(&account_for_unlock, password.as_bytes(), &argon2_config)
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // A `Submission`-scoped app password is deliberately treated the same
+    // as a wrong password here, not a distinct "not allowed on this
+    // listener" error -- telling an attacker which case they hit would
+    // confirm the credential is otherwise valid.
     let unlocked = match unlock_result {
-        Ok(unlocked) => unlocked,
-        Err(_) => {
+        Ok((unlocked, auth::AppPasswordScope::Full)) => unlocked,
+        Ok((_, auth::AppPasswordScope::Submission)) | Err(_) => {
             state.login_throttle.record_failure(&identity);
             let _ = state
                 .audit_store
@@ -120,6 +124,140 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
+}
+
+#[derive(Serialize)]
+pub struct AppPasswordResponse {
+    id: i64,
+    label: String,
+    scope: String,
+    #[serde(rename = "createdAt")]
+    created_at: i64,
+    #[serde(rename = "lastUsedAt")]
+    last_used_at: Option<i64>,
+}
+
+impl From<auth::AppPasswordSummary> for AppPasswordResponse {
+    fn from(p: auth::AppPasswordSummary) -> Self {
+        AppPasswordResponse {
+            id: p.id,
+            label: p.label,
+            scope: p.scope.as_str().to_string(),
+            created_at: p.created_at,
+            last_used_at: p.last_used_at,
+        }
+    }
+}
+
+pub async fn list_app_passwords(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AppPasswordResponse>>, StatusCode> {
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let account_id = state
+        .sessions
+        .account_id(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let passwords = state
+        .auth_store
+        .list_app_passwords(account_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        passwords
+            .into_iter()
+            .map(AppPasswordResponse::from)
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct CreateAppPasswordRequest {
+    label: String,
+    /// `"full"` or `"submission"` -- see `auth::AppPasswordScope`.
+    scope: String,
+}
+
+#[derive(Serialize)]
+pub struct CreateAppPasswordResponse {
+    #[serde(flatten)]
+    summary: AppPasswordResponse,
+    /// Shown exactly once -- the server never stores or re-derives this.
+    password: String,
+}
+
+const MAX_APP_PASSWORD_LABEL_LEN: usize = 100;
+
+pub async fn create_app_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<CreateAppPasswordRequest>,
+) -> Result<Json<CreateAppPasswordResponse>, StatusCode> {
+    let token = bearer_token(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?
+        .to_string();
+    let label = req.label.trim().to_string();
+    if label.is_empty() || label.len() > MAX_APP_PASSWORD_LABEL_LEN {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let scope =
+        auth::AppPasswordScope::parse(&req.scope).ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+
+    let permit = state
+        .auth_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let sessions = state.sessions.clone();
+    let auth_store = state.auth_store.clone();
+    let argon2_config = state.argon2_config.clone();
+    // Runs the Argon2id KDF on the blocking pool, same as every other
+    // password-derivation call in this crate -- `with_session` is called
+    // *inside* here (not the other way around) so the session mutex isn't
+    // held across an await point, matching `download`'s `resolve_blob`
+    // pattern.
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        sessions.with_session(
+            &token,
+            |account_id, _priv_key, _search_index, _identity, amk| {
+                auth_store.create_app_password(account_id, amk, &label, scope, &argon2_config)
+            },
+        )
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (summary, password) = result
+        .ok_or(StatusCode::UNAUTHORIZED)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = state
+        .audit_store
+        .log("account.app_password_create", &summary.label);
+    Ok(Json(CreateAppPasswordResponse {
+        summary: summary.into(),
+        password,
+    }))
+}
+
+pub async fn revoke_app_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, StatusCode> {
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let account_id = state
+        .sessions
+        .account_id(token)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    state
+        .auth_store
+        .revoke_app_password(account_id, id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = state
+        .audit_store
+        .log("account.app_password_revoke", &id.to_string());
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn jmap_session(
@@ -271,41 +409,42 @@ pub async fn sse(
         |(mut rx, account_id, sessions, token)| async move {
             loop {
                 tokio::select! {
-                    changed = rx.recv() => {
-                        match changed {
-                            Ok(c) if c.account_id == account_id => {
-                                let payload = serde_json::json!({
-                                    "@type": "StateChange",
-                                    "changed": {
-                                        account_id.to_string(): {
-                                            "Mailbox": c.state.to_string(),
-                                            "Email": c.state.to_string(),
-                                            "Contact": c.state.to_string(),
+                        changed = rx.recv() => {
+                            match changed {
+                                Ok(c) if c.account_id == account_id => {
+                                    let payload = serde_json::json!({
+                                        "@type": "StateChange",
+                                        "changed": {
+                                            account_id.to_string(): {
+                                                "Mailbox": c.state.to_string(),
+                                                "Email": c.state.to_string(),
+                                                "Contact": c.state.to_string(),
+                                            }
                                         }
-                                    }
-                                });
-                                let event = Event::default().event("state").data(payload.to_string());
-                                return Some((Ok(event), (rx, account_id, sessions, token)));
+                                    });
+                                    let event = Event::default().event("state").data(payload.to_string());
+                                    return Some((Ok(event), (rx, account_id, sessions, token)));
+                                }
+                                // Not this connection's account -- keep waiting,
+                                // don't emit anything for it.
+                                Ok(_) => continue,
+                                // A slow consumer missed some notifications; not
+                                // fatal, just re-fetch will catch it up (same
+                                // effect as coalescing several "changed" events).
+                                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(broadcast::error::RecvError::Closed) => return None,
                             }
-                            // Not this connection's account -- keep waiting,
-                            // don't emit anything for it.
-                            Ok(_) => continue,
-                            // A slow consumer missed some notifications; not
-                            // fatal, just re-fetch will catch it up (same
-                            // effect as coalescing several "changed" events).
-                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(broadcast::error::RecvError::Closed) => return None,
                         }
-                    }
-                    _ = tokio::time::sleep(Duration::from_secs(30)) => {
-                        if sessions.account_id(&token) != Some(account_id) {
-                            return None;
+                        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                            if sessions.account_id(&token) != Some(account_id) {
+                                return None;
+                            }
+                            return Some((Ok(Event::default().comment("heartbeat")), (rx, account_id, sessions, token)));
                         }
-                        return Some((Ok(Event::default().comment("heartbeat")), (rx, account_id, sessions, token)));
-                    }
+                }
             }
-        }
-    });
+        },
+    );
     Ok(Sse::new(stream))
 }
 
@@ -331,10 +470,7 @@ fn resolve_blob(
         let raw = delivery::open_message(&state.blobs, &stored, account_priv).ok()?;
         let message = MessageParser::default().parse(&raw)?;
         let part = message.attachments().nth(index)?;
-        let filename = part
-            .attachment_name()
-            .unwrap_or("attachment")
-            .to_string();
+        let filename = part.attachment_name().unwrap_or("attachment").to_string();
         let content_type = part
             .content_type()
             .map(|ct| match &ct.c_subtype {
@@ -388,10 +524,7 @@ pub async fn download(
     Ok((
         [
             (header::CONTENT_TYPE, content_type),
-            (
-                header::CONTENT_DISPOSITION,
-                attachment_header(&filename),
-            ),
+            (header::CONTENT_DISPOSITION, attachment_header(&filename)),
             (
                 header::HeaderName::from_static("x-content-type-options"),
                 "nosniff".to_string(),
@@ -433,7 +566,9 @@ pub async fn upload(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    if !common::input::valid_header_value(&filename) || !common::input::valid_header_value(&content_type) {
+    if !common::input::valid_header_value(&filename)
+        || !common::input::valid_header_value(&content_type)
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -457,7 +592,12 @@ pub async fn upload(
     let result = tokio::task::spawn_blocking(move || {
         state.sessions.with_session(
             &token,
-            |account_id, _account_priv, _search_index, identity, _amk| -> Result<UploadResponse, StatusCode> {
+            |account_id,
+             _account_priv,
+             _search_index,
+             identity,
+             _amk|
+             -> Result<UploadResponse, StatusCode> {
                 let (blob_hash, dek_wrap) = delivery::seal_for_account(
                     &state.blobs,
                     &identity.account_pub,

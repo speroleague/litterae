@@ -259,3 +259,94 @@ async fn cannot_send_as_someone_else() {
         "spoofed sender must be rejected: {reply}"
     );
 }
+
+#[tokio::test]
+async fn submission_scoped_app_password_can_authenticate_and_send() {
+    let (acceptor, cert) = make_acceptor();
+    let (deps, queue, _blobs, account) = make_deps(acceptor).await;
+
+    // Mint a submission-only app password against the account's real AMK
+    // (recovered here the same way the primary password would) -- this is
+    // the credential a relay/MUA would actually be handed, never the real
+    // password.
+    let unlocked = deps
+        .auth_store
+        .unlock(
+            &account,
+            b"correct horse battery staple",
+            &deps.argon2_config,
+        )
+        .unwrap();
+    let (summary, app_password) = deps
+        .auth_store
+        .create_app_password(
+            account.id,
+            &unlocked.amk,
+            "relay",
+            auth::AppPasswordScope::Submission,
+            &deps.argon2_config,
+        )
+        .unwrap();
+    assert!(summary.last_used_at.is_none());
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_implicit_connection(stream, peer.ip(), deps).await;
+    });
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert.der().clone()).unwrap();
+    let client_config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+    let server_name = rustls::pki_types::ServerName::try_from("mx.example.com").unwrap();
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let tls_stream = connector.connect(server_name, tcp).await.unwrap();
+    let mut conn = BufReader::new(tls_stream);
+
+    let greeting = read_reply(&mut conn).await;
+    assert!(greeting.starts_with("220"), "{greeting}");
+
+    send_line(&mut conn, "EHLO client.example.net").await;
+    loop {
+        let line = read_reply(&mut conn).await;
+        if line.as_bytes().get(3) == Some(&b' ') {
+            break;
+        }
+    }
+
+    send_line(
+        &mut conn,
+        &format!(
+            "AUTH PLAIN {}",
+            sasl_plain("alice@example.com", &app_password)
+        ),
+    )
+    .await;
+    let reply = read_reply(&mut conn).await;
+    assert!(
+        reply.starts_with("235"),
+        "submission-scoped app password should authenticate: {reply}"
+    );
+
+    send_line(&mut conn, "MAIL FROM:<alice@example.com>").await;
+    let reply = read_reply(&mut conn).await;
+    assert!(reply.starts_with("250"), "{reply}");
+
+    send_line(&mut conn, "RCPT TO:<bob@recipient.example>").await;
+    let reply = read_reply(&mut conn).await;
+    assert!(reply.starts_with("250"), "{reply}");
+
+    send_line(&mut conn, "DATA").await;
+    let _ = read_reply(&mut conn).await;
+    let body = "From: alice@example.com\r\nTo: bob@recipient.example\r\nSubject: via app password\r\nDate: Mon, 1 Jan 2024 00:00:00 +0000\r\nMessage-ID: <2@example.com>\r\n\r\nSent with an app password.\r\n.\r\n";
+    conn.write_all(body.as_bytes()).await.unwrap();
+    let reply = read_reply(&mut conn).await;
+    assert!(reply.starts_with("250"), "message not queued: {reply}");
+
+    let outbound = queue.get_outbound(1).unwrap().expect("outbound row exists");
+    assert_eq!(outbound.account_id, account.id);
+}

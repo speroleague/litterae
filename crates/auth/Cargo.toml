@@ -9,3 +9,6 @@ common.workspace = true
 crypto.workspace = true
 rusqlite.workspace = true
 zeroize.workspace = true
+serde.workspace = true
+rand.workspace = true
+hex.workspace = true

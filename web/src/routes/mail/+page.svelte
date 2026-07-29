@@ -370,7 +370,7 @@
 				</button>
 				<button
 					onclick={() => goto('/mail/settings')}
-					aria-label="Signature settings"
+					aria-label="Settings"
 					class="flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-[var(--surface-hover)]"
 					style="color: var(--text-muted);"
 				>

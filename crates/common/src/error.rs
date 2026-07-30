@@ -18,4 +18,7 @@ pub enum Error {
 
     #[error("network error: {0}")]
     Network(String),
+
+    #[error("rate limited: {0}")]
+    RateLimited(String),
 }

@@ -256,6 +256,15 @@ where
                         let account = envelope.authenticated.as_ref().expect("checked above");
                         let reply = match enqueue_submission(deps, account, envelope, &raw).await {
                             Ok(()) => write_reply(reader, 250, "OK: message queued").await,
+                            Err(common::Error::RateLimited(detail)) => {
+                                tracing::warn!(
+                                    account_id = account.id,
+                                    detail,
+                                    "submission rate limit exceeded"
+                                );
+                                write_reply(reader, 450, "Rate limit exceeded, try again later")
+                                    .await
+                            }
                             Err(e) => {
                                 tracing::error!(error = %e, "failed to enqueue submitted message");
                                 write_reply(reader, 451, "Local error in processing").await

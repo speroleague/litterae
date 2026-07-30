@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS outbound_rcpt (
 
 CREATE INDEX IF NOT EXISTS ix_rcpt_due ON outbound_rcpt(state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS ix_rcpt_outbound ON outbound_rcpt(outbound_id);
+CREATE INDEX IF NOT EXISTS ix_outbound_account_created ON outbound(account_id, created_at);
 
 CREATE TABLE IF NOT EXISTS dkim_keys (
     domain      TEXT PRIMARY KEY,

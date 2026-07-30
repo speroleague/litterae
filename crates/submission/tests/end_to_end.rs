@@ -210,6 +210,91 @@ async fn starttls_requires_tls_before_auth() {
 }
 
 #[tokio::test]
+async fn submission_over_the_hourly_limit_gets_450_not_queued() {
+    let (acceptor, cert) = make_acceptor();
+    let (deps, queue, blobs, account) = make_deps(acceptor).await;
+
+    // Pre-fill the account's hourly send count to the cap so the one real
+    // submission below is the message that trips the limit.
+    let domain_key = queue.ensure_dkim_key(&account.domain).unwrap();
+    for i in 0..queue::enqueue::MAX_MESSAGES_PER_WINDOW {
+        queue::enqueue(
+            &queue,
+            &blobs,
+            &domain_key,
+            &queue::NewOutbound {
+                account_id: account.id,
+                envelope_from: "alice@example.com",
+                raw_message: b"From: alice@example.com\r\n\r\nfiller",
+                recipients: &[&format!("filler{i}@recipient.example")],
+                is_dsn: false,
+                dsn_envid: None,
+                dsn_ret: None,
+            },
+        )
+        .unwrap();
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_implicit_connection(stream, peer.ip(), deps).await;
+    });
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert.der().clone()).unwrap();
+    let client_config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+    let server_name = rustls::pki_types::ServerName::try_from("mx.example.com").unwrap();
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let tls_stream = connector.connect(server_name, tcp).await.unwrap();
+    let mut conn = BufReader::new(tls_stream);
+
+    let greeting = read_reply(&mut conn).await;
+    assert!(greeting.starts_with("220"), "{greeting}");
+
+    send_line(&mut conn, "EHLO client.example.net").await;
+    loop {
+        let line = read_reply(&mut conn).await;
+        if line.as_bytes().get(3) == Some(&b' ') {
+            break;
+        }
+    }
+
+    send_line(
+        &mut conn,
+        &format!(
+            "AUTH PLAIN {}",
+            sasl_plain("alice@example.com", "correct horse battery staple")
+        ),
+    )
+    .await;
+    let reply = read_reply(&mut conn).await;
+    assert!(reply.starts_with("235"), "auth should succeed: {reply}");
+
+    send_line(&mut conn, "MAIL FROM:<alice@example.com>").await;
+    let reply = read_reply(&mut conn).await;
+    assert!(reply.starts_with("250"), "{reply}");
+
+    send_line(&mut conn, "RCPT TO:<bob@recipient.example>").await;
+    let reply = read_reply(&mut conn).await;
+    assert!(reply.starts_with("250"), "{reply}");
+
+    send_line(&mut conn, "DATA").await;
+    let _ = read_reply(&mut conn).await;
+    let body = "From: alice@example.com\r\nTo: bob@recipient.example\r\nSubject: over limit\r\nDate: Mon, 1 Jan 2024 00:00:00 +0000\r\nMessage-ID: <over@example.com>\r\n\r\nHello.\r\n.\r\n";
+    conn.write_all(body.as_bytes()).await.unwrap();
+    let reply = read_reply(&mut conn).await;
+    assert!(
+        reply.starts_with("450"),
+        "over the hourly send limit should get a temporary rejection: {reply}"
+    );
+}
+
+#[tokio::test]
 async fn cannot_send_as_someone_else() {
     let (acceptor, cert) = make_acceptor();
     let (deps, _queue, _blobs, _account) = make_deps(acceptor).await;

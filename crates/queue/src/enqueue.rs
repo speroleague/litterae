@@ -15,6 +15,17 @@ use crate::dkim::DomainKey;
 use crate::schema::{storage_err, QueueStore};
 use crate::types::NewOutbound;
 
+/// Rolling window over which per-account send limits below are enforced.
+const RATE_LIMIT_WINDOW_SECS: i64 = 3600;
+/// A single leaked credential (password or app password) must not be able
+/// to blast unbounded mail through the account's DKIM identity -- that
+/// burns the whole instance's IP/domain sending reputation, not just the
+/// one account's. DSNs (`is_dsn`) are excluded: they're generated locally
+/// by the worker, not by an authenticated sender, and are already capped
+/// by how many real messages can fail.
+pub const MAX_MESSAGES_PER_WINDOW: i64 = 200;
+pub const MAX_RECIPIENTS_PER_WINDOW: i64 = 500;
+
 pub fn enqueue(
     queue: &QueueStore,
     blobs: &BlobStore,
@@ -40,6 +51,37 @@ pub fn enqueue(
     let expires_at = now + MAX_LIFETIME_SECS;
 
     let conn = queue.conn.lock().expect("queue store mutex poisoned");
+
+    if !new.is_dsn {
+        let since = now - RATE_LIMIT_WINDOW_SECS;
+        let message_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM outbound WHERE account_id = ?1 AND created_at > ?2 AND is_dsn = 0",
+                rusqlite::params![new.account_id, since],
+                |r| r.get(0),
+            )
+            .map_err(storage_err)?;
+        if message_count >= MAX_MESSAGES_PER_WINDOW {
+            return Err(Error::RateLimited(format!(
+                "account has sent {message_count} messages in the last hour (limit {MAX_MESSAGES_PER_WINDOW})"
+            )));
+        }
+        let recipient_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM outbound_rcpt
+                 JOIN outbound ON outbound.id = outbound_rcpt.outbound_id
+                 WHERE outbound.account_id = ?1 AND outbound.created_at > ?2 AND outbound.is_dsn = 0",
+                rusqlite::params![new.account_id, since],
+                |r| r.get(0),
+            )
+            .map_err(storage_err)?;
+        if recipient_count + new.recipients.len() as i64 > MAX_RECIPIENTS_PER_WINDOW {
+            return Err(Error::RateLimited(format!(
+                "account has addressed {recipient_count} recipients in the last hour (limit {MAX_RECIPIENTS_PER_WINDOW})"
+            )));
+        }
+    }
+
     conn.execute(
         "INSERT INTO outbound
             (account_id, message_blob, envelope_from, created_at, expires_at, dsn_envid, dsn_ret, is_dsn)
@@ -128,6 +170,137 @@ mod tests {
         let stored_text = String::from_utf8(stored).unwrap();
         assert!(stored_text.starts_with("DKIM-Signature:"));
         assert!(stored_text.contains("Subject: hi"));
+    }
+
+    fn insert_raw_outbound(queue: &QueueStore, account_id: i64, created_at: i64, is_dsn: bool) {
+        let conn = queue.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO outbound
+                (account_id, message_blob, envelope_from, created_at, expires_at, is_dsn)
+             VALUES (?1, 'deadbeef', 'alice@example.com', ?2, ?2, ?3)",
+            rusqlite::params![account_id, created_at, is_dsn as i64],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rate_limit_blocks_after_max_messages_in_window() {
+        let queue = QueueStore::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::open(tmp.path()).unwrap();
+        let key = queue.ensure_dkim_key("example.com").unwrap();
+        let now = now_unix();
+
+        for _ in 0..MAX_MESSAGES_PER_WINDOW {
+            insert_raw_outbound(&queue, 1, now, false);
+        }
+
+        let new = NewOutbound {
+            account_id: 1,
+            envelope_from: "alice@example.com",
+            raw_message: b"From: alice@example.com\r\n\r\nbody",
+            recipients: &["bob@example.net"],
+            is_dsn: false,
+            dsn_envid: None,
+            dsn_ret: None,
+        };
+        let err = enqueue(&queue, &blobs, &key, &new).unwrap_err();
+        assert!(matches!(err, Error::RateLimited(_)), "{err:?}");
+
+        // A different account is unaffected by account 1's usage.
+        let other = NewOutbound {
+            account_id: 2,
+            ..new
+        };
+        assert!(enqueue(&queue, &blobs, &key, &other).is_ok());
+    }
+
+    #[test]
+    fn rate_limit_ignores_messages_outside_the_window() {
+        let queue = QueueStore::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::open(tmp.path()).unwrap();
+        let key = queue.ensure_dkim_key("example.com").unwrap();
+        let now = now_unix();
+
+        for _ in 0..MAX_MESSAGES_PER_WINDOW {
+            insert_raw_outbound(&queue, 1, now - RATE_LIMIT_WINDOW_SECS - 1, false);
+        }
+
+        let new = NewOutbound {
+            account_id: 1,
+            envelope_from: "alice@example.com",
+            raw_message: b"From: alice@example.com\r\n\r\nbody",
+            recipients: &["bob@example.net"],
+            is_dsn: false,
+            dsn_envid: None,
+            dsn_ret: None,
+        };
+        assert!(enqueue(&queue, &blobs, &key, &new).is_ok());
+    }
+
+    #[test]
+    fn rate_limit_blocks_after_max_recipients_in_window() {
+        let queue = QueueStore::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::open(tmp.path()).unwrap();
+        let key = queue.ensure_dkim_key("example.com").unwrap();
+
+        // Stay under the per-message 100-recipient cap (a separate,
+        // pre-existing check) while building up to the per-window total.
+        let batches = MAX_RECIPIENTS_PER_WINDOW / 100;
+        for batch in 0..batches {
+            let recipients: Vec<String> = (0..100)
+                .map(|i| format!("r{batch}-{i}@example.net"))
+                .collect();
+            let recipient_refs: Vec<&str> = recipients.iter().map(String::as_str).collect();
+            let new = NewOutbound {
+                account_id: 1,
+                envelope_from: "alice@example.com",
+                raw_message: b"From: alice@example.com\r\n\r\nbody",
+                recipients: &recipient_refs,
+                is_dsn: false,
+                dsn_envid: None,
+                dsn_ret: None,
+            };
+            enqueue(&queue, &blobs, &key, &new).unwrap();
+        }
+
+        let one_more = NewOutbound {
+            account_id: 1,
+            envelope_from: "alice@example.com",
+            raw_message: b"From: alice@example.com\r\n\r\nbody",
+            recipients: &["one-too-many@example.net"],
+            is_dsn: false,
+            dsn_envid: None,
+            dsn_ret: None,
+        };
+        let err = enqueue(&queue, &blobs, &key, &one_more).unwrap_err();
+        assert!(matches!(err, Error::RateLimited(_)), "{err:?}");
+    }
+
+    #[test]
+    fn dsn_messages_are_exempt_from_rate_limit() {
+        let queue = QueueStore::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::open(tmp.path()).unwrap();
+        let key = queue.ensure_dkim_key("example.com").unwrap();
+        let now = now_unix();
+
+        for _ in 0..MAX_MESSAGES_PER_WINDOW {
+            insert_raw_outbound(&queue, 1, now, false);
+        }
+
+        let new = NewOutbound {
+            account_id: 1,
+            envelope_from: "",
+            raw_message: b"From: mailer-daemon@example.com\r\n\r\nbounce",
+            recipients: &["bob@example.net"],
+            is_dsn: true,
+            dsn_envid: None,
+            dsn_ret: None,
+        };
+        assert!(enqueue(&queue, &blobs, &key, &new).is_ok());
     }
 
     #[test]

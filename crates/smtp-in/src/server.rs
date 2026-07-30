@@ -13,6 +13,7 @@ use common::config::SmtpConfig;
 use common::{Error, Result};
 use store::{BlobStore, MetadataStore};
 
+use crate::conn_limit::PerIpLimiter;
 use crate::session::{self, Deps};
 use crate::tls::load_acceptor;
 
@@ -29,6 +30,7 @@ pub async fn run(
     notifier: Arc<common::changes::ChangeNotifier>,
 ) -> Result<()> {
     const MAX_CONNECTIONS: usize = 512;
+    const MAX_CONNECTIONS_PER_IP: usize = 32;
     const MAX_SESSION_DURATION: std::time::Duration = std::time::Duration::from_secs(10 * 60);
     let tls_acceptor = load_acceptor(config)?;
     let authenticator = Arc::new(
@@ -56,6 +58,7 @@ pub async fn run(
     tracing::info!(addr = %config.listen_addr, tls = deps.tls_acceptor.is_some(), "smtp-in listening");
 
     let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let per_ip_limit = Arc::new(PerIpLimiter::new(MAX_CONNECTIONS_PER_IP));
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
@@ -63,6 +66,11 @@ pub async fn run(
                 tracing::warn!(error = %e, "failed to accept connection");
                 continue;
             }
+        };
+        let Some(ip_permit) = per_ip_limit.try_acquire(peer.ip()) else {
+            tracing::warn!(%peer, "rejecting SMTP connection: per-IP connection limit reached");
+            drop(stream);
+            continue;
         };
         let Ok(permit) = connection_limit.clone().try_acquire_owned() else {
             tracing::warn!(%peer, "rejecting SMTP connection: connection limit reached");
@@ -72,6 +80,7 @@ pub async fn run(
         let deps = deps.clone();
         tokio::spawn(async move {
             let _permit = permit;
+            let _ip_permit = ip_permit;
             if tokio::time::timeout(
                 MAX_SESSION_DURATION,
                 session::handle_connection(stream, peer.ip(), deps),

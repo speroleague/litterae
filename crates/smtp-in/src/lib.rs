@@ -2,6 +2,7 @@
 //! MAIL FROM -> RCPT TO -> DATA, SPF/DKIM/DMARC verification, then handoff
 //! to `delivery`.
 
+pub mod conn_limit;
 pub mod server;
 pub mod session;
 pub mod tls;

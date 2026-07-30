@@ -66,6 +66,23 @@ pub fn valid_local_part(local: &str) -> bool {
     valid_email_address(&format!("{local}@example.invalid"))
 }
 
+/// Validates an RFC 5321 HELO/EHLO argument: either a domain name, or an
+/// address literal (`[192.0.2.1]` / `[IPv6:2001:db8::1]`). This value is
+/// fed into SPF verification and audit logs, so malformed or protocol
+/// characters must be rejected the same as any other envelope input.
+pub fn valid_helo_domain(value: &str) -> bool {
+    if valid_domain_name(value) {
+        return true;
+    }
+    let Some(inner) = value.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+        return false;
+    };
+    match inner.strip_prefix("IPv6:") {
+        Some(v6) => v6.parse::<std::net::Ipv6Addr>().is_ok(),
+        None => inner.parse::<std::net::Ipv4Addr>().is_ok(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +106,30 @@ mod tests {
             assert!(!valid_email_address(address), "accepted {address:?}");
         }
         assert!(!valid_header_value("hello\r\nBcc: victim@example.com"));
+    }
+
+    #[test]
+    fn accepts_helo_domains_and_address_literals() {
+        for value in [
+            "mail.sender.example.net",
+            "[192.0.2.1]",
+            "[IPv6:2001:db8::1]",
+        ] {
+            assert!(valid_helo_domain(value), "rejected {value:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_helo_arguments() {
+        for value in [
+            "",
+            "not a domain",
+            "evil\r\nRCPT TO:<victim@example.com>",
+            "[not.an.ip]",
+            "[IPv6:not-an-ip]",
+            "example.com]",
+        ] {
+            assert!(!valid_helo_domain(value), "accepted {value:?}");
+        }
     }
 }

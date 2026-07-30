@@ -304,6 +304,71 @@ async fn unknown_recipient_is_rejected_no_open_relay() {
 }
 
 #[tokio::test]
+async fn malformed_helo_domain_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::open(tmp.path()).unwrap());
+    let metadata = Arc::new(MetadataStore::open_in_memory().unwrap());
+    let auth_store = Arc::new(AuthStore::open_in_memory().unwrap());
+    let authenticator = Arc::new(MessageAuthenticator::new_system_conf().unwrap());
+
+    let deps = Arc::new(Deps {
+        hostname: "mx.example.com".to_string(),
+        max_message_size: 1024,
+        auth_store,
+        admin_store: Arc::new(AdminStore::open_in_memory().unwrap()),
+        blobs,
+        metadata,
+        authenticator,
+        tls_acceptor: None,
+        scanner: Arc::new(scan::Scanner::new(None, None)),
+        audit: test_audit_store(),
+        notifier: Arc::new(common::changes::ChangeNotifier::new()),
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_connection(stream, peer.ip(), deps).await;
+    });
+
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut conn = BufReader::new(stream);
+    let _ = read_reply(&mut conn).await;
+
+    send_line(&mut conn, "EHLO not a domain").await;
+    let reply = read_reply(&mut conn).await;
+    assert!(
+        reply.starts_with("501"),
+        "malformed HELO/EHLO argument must be rejected: {reply}"
+    );
+
+    // The rejected EHLO must not have set envelope.helo_domain, so MAIL
+    // still gets the usual "bad sequence of commands" rather than being
+    // let through as if HELO had never been required.
+    send_line(&mut conn, "MAIL FROM:<sender@sender.example.net>").await;
+    let reply = read_reply(&mut conn).await;
+    assert!(
+        reply.starts_with("503"),
+        "MAIL before a valid HELO must still be rejected: {reply}"
+    );
+
+    send_line(&mut conn, "EHLO mail.sender.example.net").await;
+    loop {
+        let line = read_reply(&mut conn).await;
+        if line.as_bytes().get(3) == Some(&b' ') {
+            break;
+        }
+    }
+    send_line(&mut conn, "MAIL FROM:<sender@sender.example.net>").await;
+    let reply = read_reply(&mut conn).await;
+    assert!(
+        reply.starts_with("250"),
+        "a valid HELO afterwards must still work: {reply}"
+    );
+}
+
+#[tokio::test]
 async fn oversized_message_is_rejected_early() {
     let tmp = tempfile::tempdir().unwrap();
     let blobs = Arc::new(BlobStore::open(tmp.path()).unwrap());

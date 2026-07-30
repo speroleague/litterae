@@ -146,7 +146,12 @@ where
 
         match verb.to_ascii_uppercase().as_str() {
             "EHLO" | "HELO" => {
-                envelope.helo_domain = Some(rest.trim().to_string());
+                let domain = rest.trim();
+                if !common::input::valid_helo_domain(domain) {
+                    let _ = write_reply(reader, 501, "Syntax error in parameters").await;
+                    continue;
+                }
+                envelope.helo_domain = Some(domain.to_string());
                 envelope.reset();
                 let mut lines = vec![format!("{} Hello", deps.hostname)];
                 if verb.eq_ignore_ascii_case("EHLO") {
